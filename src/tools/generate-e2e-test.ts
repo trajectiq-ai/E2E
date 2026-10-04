@@ -1,0 +1,343 @@
+/**
+ * Tool 6 — generate-e2e-test: scaffold a Playwright test from a natural
+ * language description, grounded in what actually exists in the repo.
+ *
+ * Blueprint behavior: look at the agent's recent file changes, identify
+ * the components involved, and generate a test that uses the *correct*
+ * selectors (data-testid / role / label…) instead of guessing. When a
+ * URL is known, selectors are cross-checked against the live DOM.
+ */
+
+import { z } from 'zod';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { PlaywrightMcpError } from '../types/index.js';
+import type { ToolContext, ToolResponse } from '../types/index.js';
+import type { ElementInfo } from '../types/index.js';
+import { detectProject } from '../utils/project-detector.js';
+import { analyzeRecentChanges, detectEntryUrl } from '../utils/change-analyzer.js';
+import type { SelectorCandidate } from '../utils/change-analyzer.js';
+import { normalizePath, relativeToRoot, resolvePath, sanitizeUserPath } from '../utils/path-utils.js';
+import {
+  assertHttpUrl,
+  clipLines,
+  guard,
+  resolveConfigSelection,
+  resolveProjectRoot,
+  runBrowserScript,
+  toolText,
+} from './shared.js';
+
+const generateInput = z.object({
+  description: z
+    .string()
+    .min(3)
+    .describe('What the test should cover, e.g. "login with valid credentials"'),
+  pageUrl: z.string().optional().describe('Page the test starts on (default: baseURL from playwright.config)'),
+  projectRoot: z.string().optional().describe('Project directory; defaults to the server working directory'),
+  config: z.string().optional().describe('playwright.config path or 1-based index'),
+  testDir: z.string().optional().describe('Directory for the generated spec (default: detected testDir or tests/)'),
+  file: z.string().optional().describe('Exact file path inside the project instead of the default location'),
+  write: z.boolean().optional().describe('Write the file to disk (default true)'),
+  overwrite: z.boolean().optional().describe('Replace an existing file at the target path'),
+  liveInspect: z
+    .boolean()
+    .optional()
+    .describe('Verify discovered selectors against the live page (default true when a URL is known)'),
+});
+
+export type GenerateE2ETestInput = z.infer<typeof generateInput>;
+export const generateE2ETestSchema = generateInput;
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+const KIND_PRIORITY: Record<SelectorCandidate['kind'], number> = {
+  'test-id': 0,
+  role: 1,
+  aria: 2,
+  placeholder: 3,
+  name: 4,
+  id: 5,
+  text: 6,
+};
+
+function jsString(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r?\n/g, ' ')
+    .trim();
+}
+
+function slugify(description: string): string {
+  const slug = description
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+  return slug === '' ? 'generated-test' : slug;
+}
+
+/** Best-effort live-DOM match for a candidate locator. */
+function verifiedLive(candidate: SelectorCandidate, elements: ElementInfo[] | undefined): boolean {
+  if (!elements) return false;
+  return elements.some((element) => {
+    const values = Object.values(element.attributes);
+    switch (candidate.kind) {
+      case 'test-id':
+        return (
+          element.attributes['data-testid'] === candidate.value ||
+          element.attributes['data-test-id'] === candidate.value ||
+          element.attributes['data-test'] === candidate.value ||
+          element.attributes['data-cy'] === candidate.value ||
+          values.includes(candidate.value)
+        );
+      case 'aria':
+        return element.attributes['aria-label'] === candidate.value;
+      case 'placeholder':
+        return element.attributes['placeholder'] === candidate.value;
+      case 'id':
+        return element.id === candidate.value;
+      case 'name':
+        return element.attributes['name'] === candidate.value;
+      case 'role':
+      case 'text':
+        return (element.text ?? '').includes(candidate.value);
+      default:
+        return false;
+    }
+  });
+}
+
+function buildSpec(options: {
+  description: string;
+  entryUrl?: string;
+  selectors: SelectorCandidate[];
+}): string {
+  const title = jsString(options.description);
+  const goto = options.entryUrl
+    ? `  await page.goto('${jsString(options.entryUrl)}');`
+    : [
+        '  // No baseURL found in playwright.config — set the start URL:',
+        "  await page.goto('/');",
+      ].join('\n');
+
+  const steps: string[] = [];
+  if (options.selectors.length === 0) {
+    steps.push(
+      '  // No selectors could be discovered from recent changes.',
+      '  // Add data-testid attributes to the components, then re-run',
+      '  // generate-e2e-test — or use inspect-page to read the live DOM:',
+      "  //   await expect(page.getByTestId('your-test-id')).toBeVisible();",
+    );
+  } else {
+    for (const candidate of options.selectors) {
+      const note = `${candidate.kind} · ${candidate.file}:${candidate.line}`;
+      steps.push(`  // ${note}`);
+      steps.push(`  await expect(page.${candidate.locator}).toBeVisible();`);
+      if (candidate.kind === 'name' || candidate.kind === 'placeholder' || candidate.kind === 'aria') {
+        steps.push(`  // await page.${candidate.locator}.fill('…');`);
+      }
+      steps.push('');
+    }
+    while (steps.length > 0 && steps[steps.length - 1] === '') steps.pop();
+  }
+
+  return [
+    "import { test, expect } from '@playwright/test';",
+    '',
+    '/**',
+    ` * Generated by playwright-e2e-mcp for: "${title}"`,
+    ' * Selectors below come from the project source (recent changes).',
+    ' * Review the flow, then run it with the run-test tool.',
+    ' */',
+    `test.describe('${title}', () => {`,
+    `  test('${title}', async ({ page }) => {`,
+    goto,
+    '',
+    ...steps,
+    '  });',
+    '});',
+    '',
+  ].join('\n');
+}
+
+/* ------------------------------------------------------------------ */
+/* Tool                                                                */
+/* ------------------------------------------------------------------ */
+
+export const generateE2ETestTool = {
+  name: 'generate-e2e-test',
+  description:
+    "Scaffold a Playwright test from a description using the project's REAL selectors. Scans the agent's recent file changes (git working tree / last commit, mtime fallback), extracts data-testid / role / label / placeholder / id locators with their source locations, optionally cross-checks them against the live page, writes a ready-to-run spec, and returns next steps.",
+  inputSchema: generateE2ETestSchema,
+  handler: async (args: GenerateE2ETestInput, ctx: ToolContext): Promise<ToolResponse> =>
+    guard('generate-e2e-test', async () => {
+      const root = await resolveProjectRoot(args.projectRoot, ctx);
+      const detection = await detectProject(root);
+      const configPath = resolveConfigSelection(detection, args.config);
+
+      // Entry URL: explicit pageUrl, else baseURL / webServer url from config.
+      let entryUrl: string | undefined;
+      let entryUrlSource = 'none';
+      if (args.pageUrl) {
+        entryUrl = assertHttpUrl(args.pageUrl);
+        entryUrlSource = 'pageUrl argument';
+      } else if (configPath) {
+        const source = await readFile(configPath, 'utf8').catch(() => '');
+        const found = detectEntryUrl(source);
+        const candidate = found.baseURL ?? found.webServerUrl;
+        if (candidate) {
+          try {
+            entryUrl = assertHttpUrl(candidate);
+            entryUrlSource = found.baseURL ? 'baseURL from playwright.config' : 'webServer.url from playwright.config';
+          } catch {
+            entryUrl = undefined;
+          }
+        }
+      }
+
+      // 1. What changed recently, and which selectors do those files declare?
+      const analysis = await analyzeRecentChanges(root, { limit: 12 });
+
+      // 2. Optionally verify selectors against the live DOM.
+      let liveElements: ElementInfo[] | undefined;
+      let liveNote: string | undefined;
+      const wantsLive = args.liveInspect ?? Boolean(entryUrl);
+      if (wantsLive && entryUrl) {
+        const outcome = await runBrowserScript(
+          {
+            mode: 'inspect',
+            projectRoot: root,
+            url: entryUrl,
+            includeHtml: false,
+            gotoTimeout: 15_000,
+            startedAt: Date.now(),
+          },
+          { timeoutMs: 35_000, signal: ctx.signal },
+        );
+        if (outcome.ok) {
+          liveElements = outcome.data?.elements;
+        } else {
+          liveNote = `Live check unavailable (${outcome.kind ?? 'UNKNOWN'}): ${outcome.error ?? 'unknown error'}${
+            outcome.hint ? ` — ${outcome.hint}` : ''
+          }`;
+        }
+      } else if (!entryUrl) {
+        liveNote = 'No URL known (pass pageUrl or set baseURL in playwright.config), so selectors were not live-verified.';
+      }
+
+      // 3. Rank selectors: verified-live first, then by kind priority.
+      const ranked = analysis.selectors
+        .map((candidate) => ({ candidate, live: verifiedLive(candidate, liveElements) }))
+        .sort((a, b) => {
+          if (a.live !== b.live) return a.live ? -1 : 1;
+          return KIND_PRIORITY[a.candidate.kind] - KIND_PRIORITY[b.candidate.kind];
+        })
+        .slice(0, 8)
+        .map((entry) => entry.candidate);
+
+      const liveSet = new Set(
+        analysis.selectors.filter((candidate) => verifiedLive(candidate, liveElements)).map((c) => `${c.kind}:${c.value}`),
+      );
+
+      // 4. Build and (optionally) write the spec.
+      const spec = buildSpec({ description: args.description, entryUrl, selectors: ranked });
+
+      let targetPath: string | undefined;
+      const shouldWrite = args.write !== false;
+      if (shouldWrite) {
+        if (args.file) {
+          targetPath = sanitizeUserPath(args.file, root);
+        } else {
+          const dir = args.testDir
+            ? sanitizeUserPath(args.testDir, root)
+            : detection.testDir
+              ? normalizePath(detection.testDir)
+              : resolvePath(root, 'tests');
+          targetPath = resolvePath(dir, `generated/${slugify(args.description)}.spec.ts`);
+        }
+        const exists = await stat(targetPath).then(
+          (info) => info.isFile(),
+          () => false,
+        );
+        if (exists && args.overwrite !== true) {
+          throw new PlaywrightMcpError(
+            `A file already exists at ${relativeToRoot(root, targetPath)}`,
+            'INVALID_PATH',
+            { hint: 'Pass `overwrite: true` to replace it, or set `file` / `description` to pick a different name.' },
+          );
+        }
+        await mkdir(path.dirname(targetPath), { recursive: true });
+        await writeFile(targetPath, spec, 'utf8');
+        ctx.logger.info('generated test written', { file: targetPath, selectors: ranked.length });
+      }
+
+      // 5. Render.
+      const lines: string[] = [`## 🧪 Generated test — "${args.description}"`, ''];
+      if (targetPath) {
+        lines.push(`**File:** \`${relativeToRoot(root, targetPath)}\` (written)`);
+      } else {
+        lines.push('_Not written (`write: false`) — code below._');
+      }
+      if (entryUrl) lines.push(`**Entry URL:** ${entryUrl} (${entryUrlSource})`);
+      lines.push(
+        `**Changes analyzed:** ${analysis.files.length} file(s) via \`${
+          analysis.changeSource === 'git-status'
+            ? 'git status'
+            : analysis.changeSource === 'git-last-commit'
+              ? 'git diff HEAD~1'
+              : 'recent mtime'
+        }\`${analysis.truncated ? ' (truncated)' : ''}`,
+        '',
+      );
+
+      if (analysis.files.length > 0) {
+        lines.push('### Recent changes', '');
+        for (const file of analysis.files.slice(0, 12)) {
+          lines.push(`- \`${file.path}\` _(${file.source})_`);
+        }
+        lines.push('');
+      }
+
+      if (ranked.length > 0) {
+        lines.push(`### Selectors used (${ranked.length})`, '');
+        for (const candidate of ranked) {
+          const liveMark = liveElements
+            ? liveSet.has(`${candidate.kind}:${candidate.value}`)
+              ? ' ✅ live'
+              : ' ⚠️ not on page'
+            : '';
+          lines.push(
+            `- \`${candidate.locator}\` — ${candidate.kind} from \`${candidate.file}:${candidate.line}\`_${liveMark}_`,
+          );
+        }
+        lines.push('');
+      } else {
+        lines.push(
+          '### No selectors discovered',
+          '',
+          'The recent changes did not expose any `data-testid`, role, label, placeholder or id attributes. The scaffold below includes commented guidance; add `data-testid` attributes to your components (or call **inspect-page** on the running app) and regenerate.',
+          '',
+        );
+      }
+
+      if (liveNote) lines.push(`> ${liveNote}`, '');
+
+      lines.push('### Test source', '', '```ts', clipLines(spec, 200, 12_000), '```', '');
+
+      lines.push('### Next steps', '');
+      lines.push(
+        targetPath
+          ? `1. Review the flow (the scaffold provides selector-accurate building blocks).`
+          : `1. Save the code above, then continue.`,
+        `2. Run it: \`run-test\` with \`testFiles: ["${
+          targetPath ? relativeToRoot(root, targetPath) : '<file>'
+        }"]\`.`,
+        '3. If a locator misses, call `inspect-page` for the live DOM or `validate-selector` to prove a replacement.',
+      );
+      return toolText(lines.join('\n'));
+    }),
+};

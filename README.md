@@ -210,6 +210,20 @@ npx playwright install chromium
 
 Or run it without installing, via `npx -y playwright-e2e-mcp`.
 
+**No npm account needed** — install straight from GitHub (the `prepare` script
+builds `dist/` automatically on install):
+
+```bash
+npx -y github:trajectiq-ai/E2E
+```
+
+Or grab the packaged tarball from the repo's **GitHub Releases** page and install
+it locally:
+
+```bash
+npm install -D https://github.com/trajectiq-ai/E2E/releases/download/v0.1.0/playwright-e2e-mcp-0.1.0.tgz
+```
+
 ### MCP client configuration
 
 **Claude Code / generic (project-scoped):**

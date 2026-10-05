@@ -1,0 +1,47 @@
+name: Publish to MCP Registry
+
+# Publishes server.json to the official MCP Registry
+# (registry.modelcontextprotocol.io) using GitHub Actions OIDC — no
+# secrets or accounts required; the io.github.trajectiq-ai/* namespace is
+# granted because the workflow runs inside this repository.
+#
+# Runs on every release tag (version stamped from the tag) and on
+# manual dispatch (version read from server.json).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish server.json to registry.modelcontextprotocol.io
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # GitHub OIDC for `mcp-publisher login github-oidc`
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mcp-publisher
+        run: |
+          curl -sSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Stamp version from the release tag (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          jq --arg v "$VERSION" '.version = $v' server.json > server.tmp && mv server.tmp server.json
+
+      - name: Authenticate to the MCP Registry (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server.json
+        run: ./mcp-publisher publish
+
+      - name: Show published entry
+        run: |
+          curl -sSL "https://registry.modelcontextprotocol.io/v0/servers/io.github.trajectiq-ai/E2E" | jq '{name: .server.name, version: .server.version, websiteUrl: .server.websiteUrl}'

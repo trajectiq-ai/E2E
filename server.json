@@ -1,0 +1,13 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.trajectiq-ai/E2E",
+  "title": "Playwright E2E MCP",
+  "description": "Run and debug Playwright E2E tests: failure analysis, DOM inspection, visual diffs, flaky diagnosis.",
+  "version": "0.1.0",
+  "websiteUrl": "https://github.com/trajectiq-ai/E2E#readme",
+  "repository": {
+    "source": "github",
+    "url": "https://github.com/trajectiq-ai/E2E",
+    "id": "1404865822"
+  }
+}

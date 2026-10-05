@@ -47,6 +47,7 @@ run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], 
 
 // 2. MCPB manifest (required: name, version, description, author, server).
 const manifest = {
+  manifest_version: '0.4',
   name: pkg.name,
   display_name: 'Playwright E2E MCP',
   version: pkg.version,

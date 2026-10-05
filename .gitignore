@@ -5,6 +5,11 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# MCP bundle build artifacts (npm run mcpb)
+dist-mcpb/
+bundle.zip
+*.mcpb
+
 # Playwright artifacts
 test-results/
 playwright-report/

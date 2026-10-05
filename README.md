@@ -254,7 +254,9 @@ code --add-mcp '{"name":"playwright-e2e","command":"npx","args":["-y","github:tr
 
 **Claude Desktop (one-click):** download and double-click the `.mcpb` Desktop
 Extension attached to the [latest release](https://github.com/trajectiq-ai/E2E/releases) —
-the bundle ships its own dependencies, so no Node setup is required.
+the bundle ships its own dependencies, so no Node setup is required. On install it
+prompts once for your **project root** (defaults to your home folder) and wires it
+into `PW_MCP_PROJECT_ROOT`, so the tools point at a real project from the first call.
 
 **Claude Code:**
 
@@ -265,6 +267,12 @@ claude mcp add playwright-e2e -- npx -y github:trajectiq-ai/E2E
 **Gemini CLI / Qwen Code:** paste the `mcpServers` block above into
 `.gemini/settings.json` (Qwen Code: `.qwen/settings.json`) — both speak the same
 MCP settings format.
+
+**Freebuff / Codebuff (project-scoped):** this repo ships a committed
+[`.agents/mcp.json`](.agents/mcp.json), so opening the checkout in Freebuff
+attaches the server workspace-wide — no global config needed. Your own projects
+can do the same: drop an `mcp.json` with the block above into their `.agents/`
+directory. Freebuff asks you to trust a repository's `.agents/` on first run.
 
 All tools ship MCP **tool annotations** (`readOnlyHint`, `destructiveHint`,
 `idempotentHint`, `openWorldHint`), so clients can show accurate safety prompts

@@ -155,6 +155,15 @@ export interface CreateServerOptions {
 
 export function resolveDefaultProjectRoot(): string {
   const fromEnv = process.env.PW_MCP_PROJECT_ROOT;
+  // A host that collects PW_MCP_PROJECT_ROOT via MCPB user_config but does
+  // not substitute `${user_config.project_root}` would pass the placeholder
+  // through verbatim; that can never be a real path, so fall back to cwd.
+  if (fromEnv && fromEnv.includes('${')) {
+    logger.warn('PW_MCP_PROJECT_ROOT contains an unsubstituted ${...} placeholder; using cwd', {
+      value: fromEnv,
+    });
+    return process.cwd();
+  }
   const root = fromEnv && fromEnv.trim() !== '' ? fromEnv : process.cwd();
   if (fromEnv) {
     try {

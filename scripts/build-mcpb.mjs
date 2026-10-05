@@ -16,6 +16,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSy
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildManifest } from './mcpb-manifest.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -45,31 +46,8 @@ cpSync(path.join(root, 'dist'), path.join(stage, 'dist'), { recursive: true });
 // re-running (dist/ is already copied in).
 run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], stage);
 
-// 2. MCPB manifest (required: name, version, description, author, server).
-const manifest = {
-  manifest_version: '0.4',
-  name: pkg.name,
-  display_name: 'Playwright E2E MCP',
-  version: pkg.version,
-  description: pkg.description,
-  author: { name: 'trajectiq-ai', url: 'https://github.com/trajectiq-ai' },
-  homepage: 'https://github.com/trajectiq-ai/E2E#readme',
-  license: pkg.license ?? 'MIT',
-  keywords: ['mcp', 'playwright', 'e2e', 'testing'],
-  server: {
-    type: 'node',
-    entry_point: 'dist/index.js',
-    // `${__dirname}` is substituted by the host with the extension's
-    // install directory (Anthropic's own init template does the same);
-    // a bare relative path dies in the wrong cwd → "Server disconnected".
-    mcp_config: { command: 'node', args: ['${__dirname}/dist/index.js'], env: {} },
-  },
-  compatibility: {
-    runtimes: { node: '>=20' },
-    platforms: ['darwin', 'win32', 'linux'],
-  },
-};
-writeFileSync(path.join(stage, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+// 2. Write the manifest built by buildManifest(pkg).
+writeFileSync(path.join(stage, 'manifest.json'), `${JSON.stringify(buildManifest(pkg), null, 2)}\n`, 'utf8');
 
 // 3. Zip the staging directory with CLEAN entry names (manifest.json at
 //    the archive root — Claude Desktop's DXT loader rejects `./`-prefixed

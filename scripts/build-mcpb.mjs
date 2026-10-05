@@ -67,17 +67,43 @@ const manifest = {
 };
 writeFileSync(path.join(stage, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 
-// 3. Zip the staging directory (zip content at archive root) and rename
-//    to .mcpb. Windows: bsdtar detects the zip format from content.
+// 3. Zip the staging directory with CLEAN entry names (manifest.json at
+//    the archive root — Claude Desktop's DXT loader rejects `./`-prefixed
+//    entries) and rename to .mcpb. Windows: bsdtar detects the zip format
+//    from content.
+const members = ['manifest.json', 'dist', 'node_modules', 'package.json'];
 if (process.platform === 'win32') {
   // Prefer the system bsdtar: a PATH `tar` may be GNU tar (Git Bash),
   // which cannot write zips and parses `C:\...` as a remote host.
   const systemTar = ['C:/Windows/System32/tar.exe', 'C:/Windows/tar.exe'].find((candidate) => existsSync(candidate));
-  run(systemTar ?? 'tar', ['-a', '-c', '-f', zipPath, '-C', stage, '.'], root);
+  run(systemTar ?? 'tar', ['-a', '-c', '-f', zipPath, '-C', stage, ...members], root);
 } else {
-  run('zip', ['-r', '-q', zipPath, '.'], stage);
+  run('zip', ['-r', '-q', zipPath, ...members], stage);
 }
 renameSync(zipPath, outPath);
+
+// 4. Read the zip central directory and fail the build unless
+//    manifest.json sits at the archive root (extraction masks a bad
+//    prefix, so verify the entries themselves).
+const zip = readFileSync(outPath);
+const eocd = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+if (eocd === -1) {
+  console.error('mcpb: not a zip archive');
+  process.exit(1);
+}
+const entryCount = zip.readUInt16LE(eocd + 10);
+let offset = zip.readUInt32LE(eocd + 16);
+const names = [];
+for (let i = 0; i < entryCount; i += 1) {
+  if (zip.readUInt32LE(offset) !== 0x02014b50) break;
+  const nameLen = zip.readUInt16LE(offset + 28);
+  names.push(zip.toString('utf8', offset + 46, offset + 46 + nameLen));
+  offset += 46 + nameLen + zip.readUInt16LE(offset + 30) + zip.readUInt16LE(offset + 32);
+}
+if (!names.includes('manifest.json')) {
+  console.error(`mcpb: manifest.json not at archive root (entries: ${names.slice(0, 5).join(', ')} …)`);
+  process.exit(1);
+}
 
 console.log(`mcpb: wrote ${path.relative(root, outPath)} (${(statSync(outPath).size / 1024 / 1024).toFixed(1)} MB)`);
 rmSync(stage, { recursive: true, force: true });

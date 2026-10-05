@@ -44,4 +44,4 @@ jobs:
 
       - name: Show published entry
         run: |
-          curl -sSL "https://registry.modelcontextprotocol.io/v0/servers/io.github.trajectiq-ai/E2E" | jq '{name: .server.name, version: .server.version, websiteUrl: .server.websiteUrl}'
+          curl -sSL "https://registry.modelcontextprotocol.io/v0/servers?search=trajectiq-ai%2FE2E" | jq '.servers[0].server | {name, title, version, websiteUrl, status: ._meta["io.modelcontextprotocol.registry/official"].status}'

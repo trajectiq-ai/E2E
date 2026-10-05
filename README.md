@@ -1,6 +1,6 @@
 # playwright-e2e-mcp
 
-[![CI](https://github.com/trajectiq-ai/E2E/actions/workflows/ci.yml/badge.svg)](https://github.com/trajectiq-ai/E2E/actions/workflows/ci.yml) [![release](https://img.shields.io/github/v/release/trajectiq-ai/E2E)](https://github.com/trajectiq-ai/E2E/releases)
+[![CI](https://github.com/trajectiq-ai/E2E/actions/workflows/ci.yml/badge.svg)](https://github.com/trajectiq-ai/E2E/actions/workflows/ci.yml) [![release](https://img.shields.io/github/v/release/trajectiq-ai/E2E)](https://github.com/trajectiq-ai/E2E/releases) [![MCP Registry](https://img.shields.io/badge/MCP%20Registry-io.github.trajectiq--ai%2FE2E-2563eb)](https://registry.modelcontextprotocol.io/)
 
 An [MCP](https://modelcontextprotocol.io) server that lets AI agents **run, debug, and inspect Playwright end-to-end tests** — with structured results, actionable failure diagnostics, and live DOM inspection.
 
@@ -205,18 +205,13 @@ Requirements:
 - A project with `@playwright/test` installed and browsers available
   (`npx playwright install chromium`)
 
-```bash
-npm install -D playwright-e2e-mcp @playwright/test
-npx playwright install chromium
-```
-
-Or run it without installing, via `npx -y playwright-e2e-mcp`.
-
 **No npm account needed** — install straight from GitHub (the `prepare` script
 builds `dist/` automatically on install):
 
 ```bash
 npx -y github:trajectiq-ai/E2E
+npm install -D github:trajectiq-ai/E2E @playwright/test   # or as a project dependency
+npx playwright install chromium
 ```
 
 Or grab the packaged tarball from the repo's **GitHub Releases** page and install
@@ -225,6 +220,10 @@ it locally:
 ```bash
 npm install -D https://github.com/trajectiq-ai/E2E/releases/download/v0.1.0/playwright-e2e-mcp-0.1.0.tgz
 ```
+
+Listed in the **official [MCP Registry](https://registry.modelcontextprotocol.io/)** as
+`io.github.trajectiq-ai/E2E` — registry-aware clients discover it there, and every
+`v*` release tag republishes the entry from CI via [`server.json`](server.json).
 
 ### MCP client configuration
 
@@ -235,7 +234,7 @@ npm install -D https://github.com/trajectiq-ai/E2E/releases/download/v0.1.0/play
   "mcpServers": {
     "playwright-e2e": {
       "command": "npx",
-      "args": ["-y", "playwright-e2e-mcp"],
+      "args": ["-y", "github:trajectiq-ai/E2E"],
       "env": { "PW_MCP_PROJECT_ROOT": "/absolute/path/to/your/project" }
     }
   }
@@ -249,8 +248,8 @@ when the client launches it somewhere else (e.g. your home directory).
 **Codex / VS Code / Copilot CLIs:**
 
 ```bash
-codex mcp add playwright-e2e -- npx -y playwright-e2e-mcp
-code --add-mcp '{"name":"playwright-e2e","command":"npx","args":["-y","playwright-e2e-mcp"]}'
+codex mcp add playwright-e2e -- npx -y github:trajectiq-ai/E2E
+code --add-mcp '{"name":"playwright-e2e","command":"npx","args":["-y","github:trajectiq-ai/E2E"]}'
 ```
 
 All tools ship MCP **tool annotations** (`readOnlyHint`, `destructiveHint`,

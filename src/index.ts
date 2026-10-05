@@ -57,4 +57,5 @@ if (isMainModule()) {
 }
 
 export { createServer, startServer, SERVER_NAME, SERVER_VERSION } from './server.js';
+export { createMcpHttpHandler, handleNodeRequest, MAX_BODY_BYTES } from './http.js';
 export { logger };

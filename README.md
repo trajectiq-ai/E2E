@@ -292,6 +292,49 @@ before running anything.
 }
 ```
 
+## Hosted endpoint (ChatGPT & remote clients)
+
+Some clients — ChatGPT custom connectors especially — only accept **remote
+HTTPS** MCP servers and refuse to spawn a local `npx` process. This repo ships a
+Streamable HTTP bridge for exactly that case:
+
+| | |
+| --- | --- |
+| **Endpoint** | `https://playwright-e2e-mcp.vercel.app/api/mcp` |
+| **Transport** | MCP Streamable HTTP (`POST` JSON in, JSON or SSE out) |
+| **Auth** | none — the URL is public |
+| **Source** | [`api/mcp.ts`](api/mcp.ts) → [`src/http.ts`](src/http.ts) |
+
+The bridge runs the *same* `createServer()` as the stdio transport; the SDK
+serves every request with a fresh server instance, which is what a serverless
+function wants. `test/http-bridge.test.mjs` drives the real Node adapter over
+`node:http` so a broken bridge fails in CI, not in ChatGPT.
+
+**Add it to ChatGPT:** Settings → Connectors → turn on **Advanced → Developer
+mode** → *Create custom connector* → paste the endpoint above → authentication
+**None**.
+
+**What to expect:** `list-tests` works and reports the specs bundled with the
+deployment. Tools that spawn a browser (`run-test`, `inspect-page`,
+`validate-selector`, `diagnose-flaky`, …) cannot download Chromium in a
+serverless function, so they return their normal `NO_PLAYWRIGHT` hint. Use the
+stdio install for real runs; the hosted endpoint is for discovery and for
+clients that cannot run local processes.
+
+```bash
+# verify the handshake without any client
+curl -X POST https://playwright-e2e-mcp.vercel.app/api/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}'
+```
+
+Redeploy after a change:
+
+```bash
+npx vercel deploy --yes --prod --token="$VERCEL_TOKEN"
+```
+
 ## Configuration
 
 | Environment variable | Default | Purpose |

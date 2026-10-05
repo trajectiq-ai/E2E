@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/mcp.ts": {
+      "includeFiles": "examples/**"
+    }
+  }
+}

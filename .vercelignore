@@ -1,0 +1,21 @@
+# Only what `api/mcp.ts` needs to build and run is uploaded.
+# `dist/` is deliberately absent: it must ship (or be rebuilt by `npm run build`).
+node_modules/
+.git/
+.vercel/
+.github/
+.agents/
+test/
+e2e/
+scripts/
+coverage/
+dist-mcpb/
+*.mcpb
+test-results/
+playwright-report/
+blob-report/
+*.log
+.env
+.env.*
+.DS_Store
+Thumbs.db

@@ -20,6 +20,7 @@ jobs:
   publish:
     name: Publish server.json to registry.modelcontextprotocol.io
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write # GitHub OIDC for `mcp-publisher login github-oidc`

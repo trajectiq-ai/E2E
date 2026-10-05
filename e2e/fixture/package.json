@@ -1,0 +1,6 @@
+{
+  "name": "playwright-e2e-mcp-e2e-fixture",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Live fixture app + Playwright suite exercised by the integration harness (`npm run e2e`). Playwright itself is installed once at the repository root (devDependency); this manifest exists so the MCP server resolves the project like a real user project."
+}

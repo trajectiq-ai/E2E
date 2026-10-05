@@ -12,6 +12,11 @@ blob-report/
 .playwright/
 coverage/
 
+# Integration-suite fixtures (e2e/run.mjs regenerates these)
+.pw-mcp/
+.flaky-marker
+**/tests/generated/
+
 # Logs
 *.log
 npm-debug.log*

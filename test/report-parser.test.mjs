@@ -354,6 +354,36 @@ test('parseReportJson records trace attachments and test console output on failu
   assert.equal(parsedNone.failures[0].stdout, undefined);
 });
 
+test('parseReportJson rebases testDir-relative spec files to the project root', () => {
+  // Playwright emits `file` relative to config.rootDir (the testDir), so a
+  // project with testDir: './tests' reports 'fail.spec.ts'. Consumers
+  // (run-test, diagnose-flaky, next-step suggestions) address files from
+  // the project root — the parser must rebase, not pass the bare name on.
+  const report = {
+    config: { rootDir: '/repo/tests' },
+    suites: [
+      {
+        title: 'fail.spec.ts',
+        file: 'fail.spec.ts',
+        specs: [
+          {
+            title: 'checkout fails',
+            file: 'fail.spec.ts',
+            line: 9,
+            tests: [
+              { projectName: 'chromium', results: [{ status: 'failed', error: { message: 'boom' } }] },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const parsed = parseReportJson(JSON.stringify(report), '/repo');
+  assert.equal(parsed.failures[0].file, 'tests/fail.spec.ts');
+  assert.equal(parsed.failures[0].line, 9);
+  assert.equal(parsed.tests[0].file, 'tests/fail.spec.ts');
+});
+
 test('parseProjectNames finds configured project names', () => {
   const source = `
     export default defineConfig({

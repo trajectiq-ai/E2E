@@ -173,11 +173,15 @@ interface WalkContext {
 function normalizeSpecFile(file: string | undefined, ctx: WalkContext): string {
   if (!file) return '';
   const normalized = normalizePath(file);
-  if (!isAbsolutePath(normalized)) return normalized;
-  const bases = [ctx.rootDir, ctx.root].filter((b): b is string => Boolean(b));
-  for (const base of bases) {
-    if (isPathInside(normalized, base)) return relativeToRoot(base, normalized);
-  }
+  // Playwright addresses spec files relative to config.rootDir (the
+  // testDir), while every consumer here — run-test, diagnose-flaky,
+  // get-failure's next steps, list-tests — needs paths relative to the
+  // project root. Rebase: relative → resolve against rootDir, absolute →
+  // keep; then relativize against the project root when it is inside.
+  const absolute = isAbsolutePath(normalized)
+    ? normalized
+    : resolvePath(ctx.rootDir ?? ctx.root, normalized);
+  if (isPathInside(absolute, ctx.root)) return relativeToRoot(ctx.root, absolute);
   return normalized;
 }
 

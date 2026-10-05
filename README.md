@@ -346,6 +346,7 @@ Zod v4 standard schemas; every tool declares spec tool annotations.
 npm install
 npm run build   # tsc → dist/ (zero errors)
 npm test        # build + test/run-tests.mjs (70 unit tests, any Node ≥20)
+npm run e2e     # build + e2e/run.mjs: live MCP ↔ Playwright integration suite
 ```
 
 Tests cover the report parser (sample Playwright JSON, trace attachments), path utils
@@ -356,6 +357,28 @@ helpers, the **trace reader** (synthetic trace.zip: error, failed action, DOM sn
 (PNG round-trip, regions, color shift, dimension changes), the **change analyzer**
 (selector extraction, git + mtime paths) and the **flaky verdict logic**
 (failure signatures, CONSISTENTLY FAILING / FLAKY / NOT REPRODUCING / NO TESTS RAN).
+
+### Integration suite (`npm run e2e`)
+
+Unit tests prove the logic; the integration suite proves the loop. It boots the real
+server over stdio against a live fixture app and a Playwright project under
+`e2e/fixture/`, then drives it exactly like an MCP client and asserts ~40 behaviours
+that only appear end-to-end:
+
+- initialize handshake, 8 tools, spec tool annotations and object input schemas,
+- live DOM inspection, CSS selector validation (matches, zero matches, engine
+  syntax, parse errors), dead-server detection,
+- visual regression: baseline → unchanged compare → `blue → red` diff detection,
+- `run-test` pass/fail/`lastFailed` stats and meta lines,
+- `get-failure` trace diagnostics: DOM at failure, the 404 network request,
+  the `console.error` message, diagnosis and next steps,
+- auto-retry turning a first-run failure into `PASSED (1 flaky)`,
+- `diagnose-flaky` verdict **FLAKY** (2 of 3 runs) with retries disabled,
+- `generate-e2e-test` writing its scaffold, plus error paths
+  (missing test path, unknown tool, unreachable server).
+
+First run needs the browser once: `npx playwright install chromium`.
+CI runs the suite on Ubuntu and Windows (see `.github/workflows/ci.yml`).
 
 ### Try the example
 

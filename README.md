@@ -252,6 +252,20 @@ codex mcp add playwright-e2e -- npx -y github:trajectiq-ai/E2E
 code --add-mcp '{"name":"playwright-e2e","command":"npx","args":["-y","github:trajectiq-ai/E2E"]}'
 ```
 
+**Claude Desktop (one-click):** download and double-click the `.mcpb` Desktop
+Extension attached to the [latest release](https://github.com/trajectiq-ai/E2E/releases) —
+the bundle ships its own dependencies, so no Node setup is required.
+
+**Claude Code:**
+
+```bash
+claude mcp add playwright-e2e -- npx -y github:trajectiq-ai/E2E
+```
+
+**Gemini CLI / Qwen Code:** paste the `mcpServers` block above into
+`.gemini/settings.json` (Qwen Code: `.qwen/settings.json`) — both speak the same
+MCP settings format.
+
 All tools ship MCP **tool annotations** (`readOnlyHint`, `destructiveHint`,
 `idempotentHint`, `openWorldHint`), so clients can show accurate safety prompts
 before running anything.

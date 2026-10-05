@@ -252,6 +252,19 @@ codex mcp add playwright-e2e -- npx -y github:trajectiq-ai/E2E
 code --add-mcp '{"name":"playwright-e2e","command":"npx","args":["-y","github:trajectiq-ai/E2E"]}'
 ```
 
+Codex's defaults fight this server: the first launch clones the repo and runs
+`tsc` (measured 30 s on a cold `npx` cache, against a 10 s
+`startup_timeout_sec` default), and a Playwright run with retries beats the 60 s
+`tool_timeout_sec` default. Raise both in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.playwright-e2e]
+command = "npx"
+args = ["-y", "github:trajectiq-ai/E2E"]
+startup_timeout_sec = 60
+tool_timeout_sec = 600
+```
+
 **Claude Desktop (one-click):** download and double-click the `.mcpb` Desktop
 Extension attached to the [latest release](https://github.com/trajectiq-ai/E2E/releases) —
 the bundle ships its own dependencies, so no Node setup is required. On install it
@@ -313,6 +326,13 @@ function wants. `test/http-bridge.test.mjs` drives the real Node adapter over
 **Add it to ChatGPT:** Settings → Connectors → turn on **Advanced → Developer
 mode** → *Create custom connector* → paste the endpoint above → authentication
 **None**.
+
+Codex can also take the remote transport instead of spawning `npx`, if you'd
+rather not ship Playwright to every machine:
+
+```bash
+codex mcp add playwright-e2e-remote --url https://playwright-e2e-mcp.vercel.app/api/mcp
+```
 
 **What to expect:** `list-tests` works and reports the specs bundled with the
 deployment. Tools that spawn a browser (`run-test`, `inspect-page`,

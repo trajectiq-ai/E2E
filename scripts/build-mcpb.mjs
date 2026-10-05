@@ -59,7 +59,10 @@ const manifest = {
   server: {
     type: 'node',
     entry_point: 'dist/index.js',
-    mcp_config: { command: 'node', args: ['dist/index.js'], env: {} },
+    // `${__dirname}` is substituted by the host with the extension's
+    // install directory (Anthropic's own init template does the same);
+    // a bare relative path dies in the wrong cwd → "Server disconnected".
+    mcp_config: { command: 'node', args: ['${__dirname}/dist/index.js'], env: {} },
   },
   compatibility: {
     runtimes: { node: '>=20' },

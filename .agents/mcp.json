@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "playwright-e2e": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "github:trajectiq-ai/E2E"]
+    }
+  }
+}

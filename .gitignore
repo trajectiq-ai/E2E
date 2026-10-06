@@ -9,6 +9,7 @@ dist/
 dist-mcpb/
 bundle.zip
 *.mcpb
+*.mcpb.sha256
 
 # Playwright artifacts
 test-results/

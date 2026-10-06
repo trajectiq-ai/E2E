@@ -48,7 +48,8 @@ test('project root is prompted via user_config and wired into the env', () => {
   );
 });
 
-test('default value uses a host-substitutable variable', () => {
-  const { project_root: projectRoot } = manifest.user_config;
-  assert.equal(projectRoot.default, '${HOME}');
+test('project root has no default so the user must pick a folder', () => {
+  const projectRoot = buildManifest(pkg).user_config.project_root;
+  assert.equal(projectRoot.default, undefined);
+  assert.match(projectRoot.description, /not your home directory/);
 });

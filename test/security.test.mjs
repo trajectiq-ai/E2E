@@ -18,6 +18,9 @@ import { normalizePath, sanitizeCliArg } from '../dist/utils/path-utils.js';
 import { logger } from '../dist/utils/logger.js';
 import { assertUrlAllowed, isBlockedAddress, setBlockPrivateUrls } from '../dist/utils/url-policy.js';
 import { inspectPageTool } from '../dist/tools/inspect-page.js';
+import { childEnv, runProcess, setMaxChildren, setScrubChildEnv } from '../dist/utils/playwright-runner.js';
+import { decodePng } from '../dist/utils/image-diff.js';
+import { deflateSync } from 'node:zlib';
 
 let base;
 let root;
@@ -156,5 +159,85 @@ test('URL tools refuse private addresses only when the guard is on', async () =>
     assert.match(result.content[0].text, /private or reserved address/);
   } finally {
     setBlockPrivateUrls(false);
+  }
+});
+
+test('scrubbed child env keeps only allowlisted variables plus opt-ins', () => {
+  const saved = { ...process.env };
+  try {
+    Object.assign(process.env, {
+      PATH: '/usr/bin',
+      PLAYWRIGHT_BROWSERS_PATH: '/pw',
+      VERCEL_OIDC_TOKEN: 'secret-1',
+      MY_SERVICE_KEY: 'secret-2',
+      BASE_URL: 'https://app.example',
+      PW_MCP_HTTP_TOKEN: 'bridge-token',
+      PW_MCP_PASSTHROUGH_ENV: 'BASE_URL, PW_MCP_HTTP_TOKEN',
+    });
+    setScrubChildEnv(true);
+    const env = childEnv({ FORCE_COLOR: '0' });
+    assert.equal(env.PATH, '/usr/bin');
+    assert.equal(env.PLAYWRIGHT_BROWSERS_PATH, '/pw');
+    assert.equal(env.BASE_URL, 'https://app.example');
+    assert.equal(env.FORCE_COLOR, '0');
+    for (const name of ['VERCEL_OIDC_TOKEN', 'MY_SERVICE_KEY', 'PW_MCP_HTTP_TOKEN', 'PW_MCP_PASSTHROUGH_ENV']) {
+      assert.equal(env[name], undefined, name);
+    }
+    setScrubChildEnv(false);
+    assert.equal(childEnv().MY_SERVICE_KEY, 'secret-2');
+  } finally {
+    setScrubChildEnv(false);
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
+});
+
+test('the child cap refuses runs beyond the limit', async () => {
+  setMaxChildren(1);
+  try {
+    const slow = runProcess(process.execPath, ['-e', 'setTimeout(() => {}, 500)'], { timeoutMs: 5_000 });
+    const refused = await runProcess(process.execPath, ['-e', ''], { timeoutMs: 5_000 });
+    assert.equal(refused.spawnError?.code, 'EBUSY');
+    assert.equal((await slow).code, 0);
+  } finally {
+    setMaxChildren(0);
+  }
+});
+
+function pngWith(width, height, colorType, idat = deflateSync(Buffer.alloc(0))) {
+  const chunk = (type, data) => {
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0);
+    out.write(type, 4, 'ascii');
+    data.copy(out, 8);
+    return out; // CRC is not checked by the decoder
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = colorType;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', idat),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+test('PNG decoder rejects oversized, malformed and unknown-type images', () => {
+  assert.throws(() => decodePng(pngWith(20_000, 1, 6)), /too large/);
+  assert.throws(() => decodePng(pngWith(8_000, 8_000, 6)), /too large/);
+  assert.throws(() => decodePng(pngWith(1, 1, 5)), /color type 5/);
+  const truncated = pngWith(1, 1, 6);
+  truncated.writeUInt32BE(0x7fffffff, 8 + 8 + 13 + 4); // IDAT length far past EOF
+  assert.throws(() => decodePng(truncated), /overruns/);
+  const ok = decodePng(pngWith(1, 1, 6, deflateSync(Buffer.from([0, 1, 2, 3, 4]))));
+  assert.deepEqual([...ok.data], [1, 2, 3, 4]);
+});
+
+test('every reporter flag is refused as a caller argument', () => {
+  for (const bad of ['--reporter=line', '--reporter', '--reporter=json,html']) {
+    assert.throws(() => sanitizeCliArg(bad), (err) => err.kind === 'INVALID_PATH', bad);
   }
 });

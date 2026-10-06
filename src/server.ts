@@ -55,10 +55,11 @@ const TOOLS: ToolSpec[] = [
   {
     ...runTestTool,
     title: 'Run E2E tests',
-    // Spawns Playwright, hits live apps, writes test-results/ artifacts.
+    // Spawns Playwright, which runs the project's own test code (arbitrary
+    // Node), hits live apps and writes test-results/ artifacts.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: true,
       openWorldHint: true,
     },
@@ -117,17 +118,17 @@ const TOOLS: ToolSpec[] = [
       readOnlyHint: false,
       destructiveHint: true,
       idempotentHint: false,
-      openWorldHint: false,
+      openWorldHint: true,
     },
     handler: generateE2ETestTool.handler as ToolSpec['handler'],
   },
   {
     ...compareVisualStateTool,
     title: 'Compare visual state',
-    // Navigates the app; baseline action overwrites only the stored baseline.
+    // Navigates the app; the baseline action overwrites a stored baseline.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: true,
       openWorldHint: true,
     },
@@ -136,10 +137,10 @@ const TOOLS: ToolSpec[] = [
   {
     ...diagnoseFlakyTool,
     title: 'Diagnose flaky test',
-    // Spawns Playwright repeatedly; writes test-results/ artifacts only.
+    // Spawns Playwright repeatedly, running the project's test code.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: true,
       openWorldHint: true,
     },

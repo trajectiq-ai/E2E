@@ -205,10 +205,6 @@ export async function testPathExists(argument: string, root: string): Promise<bo
   }
 }
 
-export function isInsideRoot(path: string, root: string): boolean {
-  return isPathInside(path, root);
-}
-
 /* ------------------------------------------------------------------ */
 /* Rendering helpers                                                   */
 /* ------------------------------------------------------------------ */

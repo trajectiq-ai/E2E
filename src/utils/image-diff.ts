@@ -66,6 +66,18 @@ function paeth(a: number, b: number, c: number): number {
   return c;
 }
 
+/** Decode limits: generous for screenshots, small enough to bound memory. */
+const MAX_PNG_SIDE = 16_384;
+const MAX_PNG_PIXELS = 50_000_000;
+/** Channels per PNG color type: gray, RGB, palette, gray+alpha, RGBA. */
+const PNG_CHANNELS = new Map<number, number>([
+  [0, 1],
+  [2, 3],
+  [3, 1],
+  [4, 2],
+  [6, 4],
+]);
+
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 /** Decode an 8-bit, non-interlaced PNG (gray/RGB/palette/alpha variants). */
@@ -85,11 +97,12 @@ export function decodePng(buf: Buffer): RgbaImage {
   let offset = 8;
   while (offset + 8 <= buf.length) {
     const length = buf.readUInt32BE(offset);
+    if (length > buf.length - offset - 12) throw new Error(`PNG chunk at byte ${offset} overruns the file`);
     const type = buf.toString('ascii', offset + 4, offset + 8);
     const data = buf.subarray(offset + 8, offset + 8 + length);
-    if (offset + 12 + length > buf.length) break;
 
     if (type === 'IHDR') {
+      if (length !== 13) throw new Error('PNG IHDR chunk has the wrong length');
       width = data.readUInt32BE(0);
       height = data.readUInt32BE(4);
       bitDepth = data[8];
@@ -106,12 +119,15 @@ export function decodePng(buf: Buffer): RgbaImage {
   }
 
   if (width <= 0 || height <= 0) throw new Error('PNG is missing a valid IHDR chunk');
-  if (width * height > 100_000_000) throw new Error(`PNG is too large (${width}×${height})`);
+  if (width > MAX_PNG_SIDE || height > MAX_PNG_SIDE || width * height > MAX_PNG_PIXELS) {
+    throw new Error(`PNG is too large (${width}×${height}; limit ${MAX_PNG_SIDE} per side, ${MAX_PNG_PIXELS} pixels)`);
+  }
+  if (!PNG_CHANNELS.has(colorType)) throw new Error(`Unsupported PNG color type ${colorType}`);
   if (bitDepth !== 8) throw new Error(`Unsupported PNG bit depth ${bitDepth} (only 8 supported)`);
   if (interlace !== 0) throw new Error('Interlaced PNGs are not supported');
   if (colorType === 3 && !palette) throw new Error('Palette PNG is missing its PLTE chunk');
 
-  const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 4 ? 2 : 1;
+  const channels = PNG_CHANNELS.get(colorType) as number;
   const stride = width * channels;
   // Bound the output by what the header says the image needs (zip-bomb guard).
   const raw = inflateSync(Buffer.concat(idat), { maxOutputLength: height * (stride + 1) + 1024 });

@@ -42,16 +42,15 @@ export function buildManifest(packageJson) {
     // Install-time prompt: the host asks once for the folder the Playwright
     // tools should treat as the project root and substitutes it into
     // mcp_config.env (MCPB spec: `${user_config.KEY}` in mcp_config).
-    // required + ${HOME} default mirrors the spec's own directory example,
-    // so the dialog is always prefilled and never blocks installation.
+    // No default on purpose: a prefilled ${HOME} would hand every tool the
+    // whole home directory, so the user must pick a project folder.
     user_config: {
       project_root: {
         type: 'directory',
         title: 'Project root',
         description:
-          'Folder containing your project and its Playwright tests; every tool resolves paths against it.',
+          'Folder containing your project and its Playwright tests; every tool resolves paths against it and can read, run and write files inside it. Pick the project folder, not your home directory.',
         required: true,
-        default: '${HOME}',
       },
     },
     compatibility: {

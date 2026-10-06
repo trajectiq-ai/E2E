@@ -18,7 +18,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { createMcpHandler, hostHeaderValidationResponse } from '@modelcontextprotocol/server';
 import type { McpHttpHandler } from '@modelcontextprotocol/server';
 import { createServer, READ_ONLY_TOOLS } from './server.js';
-import { setScrubChildEnv } from './utils/playwright-runner.js';
+import { setMaxChildren, setScrubChildEnv } from './utils/playwright-runner.js';
 import { setBlockPrivateUrls } from './utils/url-policy.js';
 import { logger } from './utils/logger.js';
 
@@ -70,6 +70,7 @@ export function createMcpHttpHandler(options: McpHttpHandlerOptions = {}): McpHt
   // Children spawned on behalf of HTTP callers must not see deployment
   // secrets, and URL tools must not reach the deployment's private network.
   setScrubChildEnv(true);
+  setMaxChildren(Number(process.env.PW_MCP_MAX_CHILDREN ?? '') || 4);
   setBlockPrivateUrls(true);
   if (!token) {
     logger.warn('PW_MCP_HTTP_TOKEN is not set; serving read-only tools only', { tools: READ_ONLY_TOOLS });

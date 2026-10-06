@@ -26,6 +26,17 @@ let base;
 let root;
 let outside;
 
+/**
+ * Environment variables keep whatever casing the OS gave them — Windows
+ * names PATH `Path` — but `childEnv()` returns a plain object, where lookups
+ * are case-sensitive. Match names case-insensitively so this suite behaves
+ * the same on a Git Bash shell (PATH) and a Windows runner (Path).
+ */
+function envValue(env, name) {
+  const key = Object.keys(env).find((candidate) => candidate.toUpperCase() === name.toUpperCase());
+  return key === undefined ? undefined : env[key];
+}
+
 before(async () => {
   base = normalizePath(await mkdtemp(path.join(os.tmpdir(), 'pw-mcp-sec-')));
   root = `${base}/project`;
@@ -176,15 +187,15 @@ test('scrubbed child env keeps only allowlisted variables plus opt-ins', () => {
     });
     setScrubChildEnv(true);
     const env = childEnv({ FORCE_COLOR: '0' });
-    assert.equal(env.PATH, '/usr/bin');
-    assert.equal(env.PLAYWRIGHT_BROWSERS_PATH, '/pw');
-    assert.equal(env.BASE_URL, 'https://app.example');
-    assert.equal(env.FORCE_COLOR, '0');
+    assert.equal(envValue(env, 'PATH'), '/usr/bin');
+    assert.equal(envValue(env, 'PLAYWRIGHT_BROWSERS_PATH'), '/pw');
+    assert.equal(envValue(env, 'BASE_URL'), 'https://app.example');
+    assert.equal(envValue(env, 'FORCE_COLOR'), '0');
     for (const name of ['VERCEL_OIDC_TOKEN', 'MY_SERVICE_KEY', 'PW_MCP_HTTP_TOKEN', 'PW_MCP_PASSTHROUGH_ENV']) {
-      assert.equal(env[name], undefined, name);
+      assert.equal(envValue(env, name), undefined, name);
     }
     setScrubChildEnv(false);
-    assert.equal(childEnv().MY_SERVICE_KEY, 'secret-2');
+    assert.equal(envValue(childEnv(), 'MY_SERVICE_KEY'), 'secret-2');
   } finally {
     setScrubChildEnv(false);
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];

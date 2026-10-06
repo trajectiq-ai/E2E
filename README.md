@@ -402,6 +402,8 @@ npx vercel deploy --yes --prod --token="$VERCEL_TOKEN"
 | `PW_MCP_ALLOWED_ROOTS` | — | Extra directories a caller may pass as `projectRoot` (`:`-separated, `;` on Windows). Anything outside these and the default root is rejected |
 | `PW_MCP_HTTP_TOKEN` | — | HTTP bridge only: bearer token that unlocks all tools (see above) |
 | `PW_MCP_ALLOWED_HOSTS` | — | HTTP bridge only: comma-separated `Host` allowlist |
+| `PW_MCP_PASSTHROUGH_ENV` | — | HTTP bridge only: comma-separated extra variables passed to test runs (e.g. `BASE_URL`) |
+| `PW_MCP_MAX_CHILDREN` | `4` | HTTP bridge only: how many test runs and browser probes may run at once |
 | `PW_MCP_BLOCK_PRIVATE_URLS` | off (on for the HTTP bridge) | `1` makes the URL tools refuse loopback, private-network and cloud-metadata addresses, including redirects and subresources |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` \| `silent` |
 | `LOG_FORMAT` | `text` | `text` or `json` (structured) |
@@ -457,7 +459,9 @@ Logs always go to **stderr** — stdout is reserved for the MCP protocol.
   only overwrites specs it generated itself, and escapes every value it puts into
   strings or comments.
 - **HTTP bridge**: read-only tools unless `PW_MCP_HTTP_TOKEN` is set; child processes
-  started over HTTP get an environment without secret-looking variables; internal
+  started over HTTP get only an allowlisted environment (`PATH`, `HOME`, temp dirs,
+  locale, `CI`, `PLAYWRIGHT_*`, `npm_config_*`, plus anything in
+  `PW_MCP_PASSTHROUGH_ENV`), at most `PW_MCP_MAX_CHILDREN` run at once, and internal
   error messages are not returned to clients.
 - **SSRF guard**: on the HTTP bridge (or with `PW_MCP_BLOCK_PRIVATE_URLS=1`) the URL tools
   refuse hosts that resolve to loopback, private, link-local/metadata or reserved

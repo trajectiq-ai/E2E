@@ -91,10 +91,12 @@ function resolveTracePath(
       name === 'trace' || name.endsWith('.zip') || contentType.includes('zip') || contentType.includes('trace');
     if (!isTrace || !attachment.path) continue;
     const p = normalizePath(attachment.path);
-    if (isAbsolutePath(p)) return p;
-    const bases = [ctx.rootDir, ctx.root].filter((b): b is string => Boolean(b));
-    for (const base of bases) return resolvePath(base, p);
-    return p;
+    const base = ctx.rootDir ?? ctx.root;
+    const resolved = isAbsolutePath(p) ? p : resolvePath(base, p);
+    // The report is project-controlled: only follow trace paths that stay
+    // inside the project root, so get-failure cannot be pointed at other files.
+    if (!isPathInside(resolved, ctx.root)) continue;
+    return resolved;
   }
   return undefined;
 }

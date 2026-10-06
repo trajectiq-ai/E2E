@@ -194,6 +194,22 @@ export function runProcess(command: string, args: string[], options: RunProcessO
       }
     };
 
+    if (maxChildren > 0 && activeChildren.size >= maxChildren) {
+      resolve({
+        code: null,
+        signalName: null,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+        aborted: false,
+        spawnError: {
+          code: 'EBUSY',
+          message: `Too many runs in progress (limit ${maxChildren}). Try again when one finishes.`,
+        },
+      });
+      return;
+    }
+
     let child: ChildProcess;
     try {
       child = spawn(command, args, {
@@ -288,24 +304,83 @@ export function runProcess(command: string, args: string[], options: RunProcessO
 /** Every child spawned by runProcess that has not settled yet. */
 const activeChildren = new Set<ChildProcess>();
 
+let maxChildren = 0;
+
+/**
+ * Cap how many children may run at once; 0 means no cap. The HTTP bridge
+ * sets one (PW_MCP_MAX_CHILDREN, default 4) so remote callers cannot
+ * start an unbounded number of browsers and test runs.
+ */
+export function setMaxChildren(limit: number): void {
+  maxChildren = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
+}
+
 let scrubChildEnv = false;
 
 /**
- * When on (the HTTP bridge turns it on), children get an environment with
- * secret-looking variables removed, so code run on behalf of a remote
- * caller cannot read deployment credentials.
+ * When on (the HTTP bridge turns it on), children get only an allowlisted
+ * environment, so code run on behalf of a remote caller cannot read
+ * deployment credentials.
  */
 export function setScrubChildEnv(enabled: boolean): void {
   scrubChildEnv = enabled;
 }
 
+/** Variables a child keeps in scrubbed mode (compared upper-case). */
+const CHILD_ENV_ALLOW = new Set([
+  'PATH',
+  'PATHEXT',
+  'HOME',
+  'USERPROFILE',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'LANG',
+  'LANGUAGE',
+  'TZ',
+  'CI',
+  'SYSTEMROOT',
+  'SYSTEMDRIVE',
+  'WINDIR',
+  'COMSPEC',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'PROGRAMDATA',
+  'PROGRAMFILES',
+  'PROGRAMFILES(X86)',
+  'XDG_CACHE_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_RUNTIME_DIR',
+  'DISPLAY',
+]);
+const CHILD_ENV_ALLOW_PREFIXES = ['LC_', 'NPM_CONFIG_', 'PLAYWRIGHT_'];
+/** Even allowlisted names are dropped when they look like a secret. */
 const SECRET_ENV_RE = /(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE|API_?KEY|ACCESS_?KEY|AUTH|SESSION|COOKIE|DATABASE_URL|_DSN$)/i;
 
-/** Environment for a spawned child: process.env plus overrides, scrubbed when enabled. */
+/** Names listed in PW_MCP_PASSTHROUGH_ENV (comma-separated), never the bridge token. */
+function passthroughNames(): Set<string> {
+  return new Set(
+    (process.env.PW_MCP_PASSTHROUGH_ENV ?? '')
+      .split(',')
+      .map((name) => name.trim().toUpperCase())
+      .filter((name) => name && name !== 'PW_MCP_HTTP_TOKEN'),
+  );
+}
+
+function keepInScrubbedEnv(key: string, passthrough: Set<string>): boolean {
+  const upper = key.toUpperCase();
+  if (upper === 'PW_MCP_HTTP_TOKEN') return false;
+  if (passthrough.has(upper)) return true;
+  if (SECRET_ENV_RE.test(key)) return false;
+  return CHILD_ENV_ALLOW.has(upper) || CHILD_ENV_ALLOW_PREFIXES.some((prefix) => upper.startsWith(prefix));
+}
+
+/** Environment for a spawned child: process.env plus overrides, allowlisted when scrubbing. */
 export function childEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
+  const passthrough = scrubChildEnv ? passthroughNames() : new Set<string>();
   for (const [key, value] of Object.entries(process.env)) {
-    if (scrubChildEnv && SECRET_ENV_RE.test(key)) continue;
+    if (scrubChildEnv && !keepInScrubbedEnv(key, passthrough)) continue;
     env[key] = value;
   }
   return { ...env, ...overrides };
@@ -462,6 +537,12 @@ export async function runTests(options: RunTestOptions): Promise<RunTestResult> 
   const hasTraceFlag = (options.extraArgs ?? []).some((extra) => extra.startsWith('--trace'));
   if (!hasTraceFlag) args.push('--trace=retain-on-failure');
   for (const extra of options.extraArgs ?? []) args.push(sanitizeCliArg(extra));
+  // The JSON reporter must be the only reporter and come last: results are
+  // parsed from its output. sanitizeCliArg rejects --reporter; this keeps
+  // the invariant if that ever changes.
+  if (args.some((arg) => arg.startsWith('--reporter'))) {
+    throw new PlaywrightMcpError('Caller arguments may not set --reporter', 'INVALID_PATH');
+  }
   args.push('--reporter=json');
 
   const env = childEnv({
@@ -678,34 +759,4 @@ export async function listTests(options: ListTestsOptions): Promise<ListTestsRes
     source,
     error,
   };
-}
-
-/* ------------------------------------------------------------------ */
-/* Dev-server probe                                                    */
-/* ------------------------------------------------------------------ */
-
-export interface ServerProbe {
-  reachable: boolean;
-  status?: number;
-  error?: string;
-}
-
-/**
- * Quick reachability check for the app under test, used to tell the
- * user "start your dev server" instead of surfacing ECONNREFUSED.
- */
-export async function probeServer(url: string, timeoutMs = 2_000): Promise<ServerProbe> {
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    return { reachable: true, status: response.status };
-  } catch (err) {
-    return {
-      reachable: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
 }

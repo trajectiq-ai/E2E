@@ -345,6 +345,13 @@ test('parseReportJson records trace attachments and test console output on failu
   const parsedAbs = parseReportJson(JSON.stringify(absolute), 'C:/proj');
   assert.equal(parsedAbs.failures[0].tracePath, 'C:/proj/test-results/t.zip');
 
+  // Trace paths outside the project root are ignored, absolute or relative.
+  for (const outside of ['/etc/passwd.zip', '../../secret/trace.zip']) {
+    const escaped = JSON.parse(JSON.stringify(report));
+    escaped.suites[0].specs[0].tests[0].results[0].attachments[0].path = outside;
+    assert.equal(parseReportJson(JSON.stringify(escaped), '/repo').failures[0].tracePath, undefined, outside);
+  }
+
   // No attachments → no tracePath.
   const without = JSON.parse(JSON.stringify(report));
   delete without.suites[0].specs[0].tests[0].results[0].attachments;

@@ -24,6 +24,7 @@ and every other MCP client — pick whichever route fits:
 
 | Route | How |
 | --- | --- |
+| **npm (canonical, fastest)** | `npx -y playwright-e2e-mcp` |
 | **MCP Registry** (registry-aware clients discover it automatically) | `io.github.trajectiq-ai/E2E` — [listing](https://registry.modelcontextprotocol.io/) |
 | **Any client, no npm account needed** | `npx -y github:trajectiq-ai/E2E` |
 | **Claude Desktop, zero Node setup** | double-click the [`.mcpb` extension](https://github.com/trajectiq-ai/E2E/releases) |

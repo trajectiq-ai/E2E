@@ -5,6 +5,14 @@
   "mcpName": "io.github.trajectiq-ai/E2E",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://playwright-e2e-mcp.vercel.app",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trajectiq-ai/E2E.git"
+  },
+  "bugs": {
+    "url": "https://github.com/trajectiq-ai/E2E/issues"
+  },
   "keywords": [
     "mcp",
     "model-context-protocol",

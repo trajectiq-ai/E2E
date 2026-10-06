@@ -17,6 +17,20 @@ and a concrete "how to fix" hint. When a test fails because a selector no longer
 matches, the agent can open the **live page** in a headless browser, see the real DOM
 with unique CSS selectors, and validate the replacement selector before re-running.
 
+## Demo
+
+**Live endpoint** — a real `initialize` + `tools/list` round-trip against
+`https://playwright-e2e-mcp.vercel.app/api/mcp`:
+
+![Live endpoint: initialize handshake and all 8 tools](https://raw.githubusercontent.com/trajectiq-ai/E2E/main/docs/demo-endpoint.png)
+
+**A real test run** — `run-test` served over stdio by `npx -y playwright-e2e-mcp`
+against the bundled `examples/sample-test.spec.ts` (actual output, unedited):
+
+![run-test result: 4 passed, 0 failed, 5.1s](https://raw.githubusercontent.com/trajectiq-ai/E2E/main/docs/demo-run-test.png)
+
+Images are generated from real captured output with `node scripts/gen-demo-images.mjs`.
+
 ## Install
 
 Works with Claude Desktop, Claude Code, Cursor, Windsurf, Codex, Gemini CLI, Freebuff

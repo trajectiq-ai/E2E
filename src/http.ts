@@ -14,20 +14,80 @@
  */
 
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
-import { createMcpHandler } from '@modelcontextprotocol/server';
+import { timingSafeEqual } from 'node:crypto';
+import { createMcpHandler, hostHeaderValidationResponse } from '@modelcontextprotocol/server';
 import type { McpHttpHandler } from '@modelcontextprotocol/server';
-import { createServer } from './server.js';
+import { createServer, READ_ONLY_TOOLS } from './server.js';
+import { setScrubChildEnv } from './utils/playwright-runner.js';
 import { logger } from './utils/logger.js';
 
 /** Mirrors the SDK's default POST body bound, so oversized bodies die early. */
 export const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
+export interface McpHttpHandlerOptions {
+  /**
+   * Bearer token clients must send (`Authorization: Bearer <token>`).
+   * Defaults to PW_MCP_HTTP_TOKEN. With a token every tool is served;
+   * without one only READ_ONLY_TOOLS are, so an open endpoint can never
+   * spawn processes, drive a browser or write files.
+   */
+  token?: string;
+  /**
+   * Hostnames accepted in the Host header (DNS-rebinding protection).
+   * Defaults to PW_MCP_ALLOWED_HOSTS (comma separated); empty allows any.
+   */
+  allowedHosts?: string[];
+}
+
+function envList(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+}
+
+/** Constant-time comparison of the presented bearer token. */
+function tokenMatches(header: string | null, token: string): boolean {
+  const match = /^Bearer\s+(.+)$/i.exec(header?.trim() ?? '');
+  if (!match) return false;
+  const presented = Buffer.from(match[1].trim());
+  const expected = Buffer.from(token);
+  return presented.length === expected.length && timingSafeEqual(presented, expected);
+}
+
+function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json', ...headers },
+  });
+}
+
 /** Build the fetch-shaped MCP handler backed by a fresh server per request. */
-export function createMcpHttpHandler(): McpHttpHandler {
-  return createMcpHandler(() => createServer(), {
+export function createMcpHttpHandler(options: McpHttpHandlerOptions = {}): McpHttpHandler {
+  const token = (options.token ?? process.env.PW_MCP_HTTP_TOKEN ?? '').trim();
+  const allowedHosts = options.allowedHosts ?? envList(process.env.PW_MCP_ALLOWED_HOSTS);
+  // Children spawned on behalf of HTTP callers must not see deployment secrets.
+  setScrubChildEnv(true);
+  if (!token) {
+    logger.warn('PW_MCP_HTTP_TOKEN is not set; serving read-only tools only', { tools: READ_ONLY_TOOLS });
+  }
+  const inner = createMcpHandler(() => createServer(token ? {} : { tools: READ_ONLY_TOOLS }), {
     legacy: 'stateless',
     onerror: (error: Error) => logger.error('mcp http handler error', { error }),
   });
+  return {
+    ...inner,
+    fetch: async (request, requestOptions) => {
+      if (allowedHosts.length > 0) {
+        const rejected = hostHeaderValidationResponse(request, allowedHosts);
+        if (rejected) return rejected;
+      }
+      if (token && !tokenMatches(request.headers.get('authorization'), token)) {
+        return jsonResponse(401, { error: 'unauthorized' }, { 'www-authenticate': 'Bearer' });
+      }
+      return inner.fetch(request, requestOptions);
+    },
+  };
 }
 
 /** A failure that maps onto an HTTP status before any response is written. */
@@ -118,7 +178,10 @@ export async function handleNodeRequest(
     if (!res.headersSent && !res.writableEnded) {
       res.statusCode = status;
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      // Only our own RequestError messages are meant for clients; anything
+      // else may carry paths or internals, so it stays in the server log.
+      const message = err instanceof RequestError ? err.message : 'internal server error';
+      res.end(JSON.stringify({ error: message }));
     } else if (!res.writableEnded) {
       res.destroy();
     }

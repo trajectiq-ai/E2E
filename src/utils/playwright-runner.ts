@@ -288,6 +288,29 @@ export function runProcess(command: string, args: string[], options: RunProcessO
 /** Every child spawned by runProcess that has not settled yet. */
 const activeChildren = new Set<ChildProcess>();
 
+let scrubChildEnv = false;
+
+/**
+ * When on (the HTTP bridge turns it on), children get an environment with
+ * secret-looking variables removed, so code run on behalf of a remote
+ * caller cannot read deployment credentials.
+ */
+export function setScrubChildEnv(enabled: boolean): void {
+  scrubChildEnv = enabled;
+}
+
+const SECRET_ENV_RE = /(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE|API_?KEY|ACCESS_?KEY|AUTH|SESSION|COOKIE|DATABASE_URL|_DSN$)/i;
+
+/** Environment for a spawned child: process.env plus overrides, scrubbed when enabled. */
+export function childEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (scrubChildEnv && SECRET_ENV_RE.test(key)) continue;
+    env[key] = value;
+  }
+  return { ...env, ...overrides };
+}
+
 /**
  * Force-kill every child still running (and its tree). Called on
  * shutdown and when the MCP client disconnects so no browser or test
@@ -441,12 +464,11 @@ export async function runTests(options: RunTestOptions): Promise<RunTestResult> 
   for (const extra of options.extraArgs ?? []) args.push(sanitizeCliArg(extra));
   args.push('--reporter=json');
 
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
+  const env = childEnv({
     PLAYWRIGHT_JSON_OUTPUT_NAME: reportPath,
     FORCE_COLOR: '0',
     PW_TEST_HTML_REPORT_OPEN: 'never',
-  };
+  });
 
   const timeoutMs = clampInt(options.timeoutMs, 1_000, 3_600_000) ?? DEFAULT_RUN_TIMEOUT_MS;
   const startedAt = Date.now();
@@ -556,11 +578,10 @@ async function runPlaywrightList(
   if (configPath) args.push('--config', toNativePath(configPath));
   args.push('--reporter=json');
 
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
+  const env = childEnv({
     PLAYWRIGHT_JSON_OUTPUT_NAME: listReportPath,
     FORCE_COLOR: '0',
-  };
+  });
 
   const outcome = await runProcess(process.execPath, [cli, ...args], {
     cwd: root,

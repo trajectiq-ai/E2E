@@ -106,13 +106,15 @@ export function decodePng(buf: Buffer): RgbaImage {
   }
 
   if (width <= 0 || height <= 0) throw new Error('PNG is missing a valid IHDR chunk');
+  if (width * height > 100_000_000) throw new Error(`PNG is too large (${width}×${height})`);
   if (bitDepth !== 8) throw new Error(`Unsupported PNG bit depth ${bitDepth} (only 8 supported)`);
   if (interlace !== 0) throw new Error('Interlaced PNGs are not supported');
   if (colorType === 3 && !palette) throw new Error('Palette PNG is missing its PLTE chunk');
 
   const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 4 ? 2 : 1;
   const stride = width * channels;
-  const raw = inflateSync(Buffer.concat(idat));
+  // Bound the output by what the header says the image needs (zip-bomb guard).
+  const raw = inflateSync(Buffer.concat(idat), { maxOutputLength: height * (stride + 1) + 1024 });
   if (raw.length < height * (stride + 1)) throw new Error('PNG data is truncated');
 
   // Unfilter scanlines.

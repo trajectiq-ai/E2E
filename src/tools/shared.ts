@@ -8,6 +8,7 @@
  */
 
 import { rm, stat, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import type {
   ErrorKind,
   FailureKind,
@@ -20,6 +21,7 @@ import type {
 } from '../types/index.js';
 import { PlaywrightMcpError, toPlaywrightMcpError } from '../types/index.js';
 import {
+  assertRealPathInside,
   isPathInside,
   normalizePath,
   resolvePath,
@@ -27,7 +29,7 @@ import {
   tempFilePath,
 } from '../utils/path-utils.js';
 import { selectConfig } from '../utils/project-detector.js';
-import { runProcess } from '../utils/playwright-runner.js';
+import { childEnv, runProcess } from '../utils/playwright-runner.js';
 import { extractJsonFromText } from '../utils/report-parser.js';
 
 /* ------------------------------------------------------------------ */
@@ -85,8 +87,23 @@ async function isDirectory(p: string): Promise<boolean> {
 }
 
 /**
+ * Directories a caller may pick as `projectRoot`: the server's default root
+ * plus any listed in PW_MCP_ALLOWED_ROOTS (separated by the platform's
+ * path delimiter, `:` or `;`).
+ */
+export function allowedProjectRoots(defaultRoot: string): string[] {
+  const extra = (process.env.PW_MCP_ALLOWED_ROOTS ?? '')
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '');
+  return [defaultRoot, ...extra].map((entry) => normalizePath(entry));
+}
+
+/**
  * Resolve the project root: defaults to the server's working directory;
- * an explicit value is resolved against it and must exist.
+ * an explicit value is resolved against it, must exist, and must sit
+ * inside the default root or a PW_MCP_ALLOWED_ROOTS entry (symlinks
+ * resolved), so a caller cannot point the tools at an arbitrary directory.
  */
 export async function resolveProjectRoot(
   input: string | undefined,
@@ -100,7 +117,19 @@ export async function resolveProjectRoot(
       hint: 'Pass `projectRoot` as an existing directory (absolute, or relative to the server working directory).',
     });
   }
-  return resolved;
+  const allowed = allowedProjectRoots(base);
+  for (const root of allowed) {
+    if (!isPathInside(resolved, root)) continue;
+    try {
+      await assertRealPathInside(resolved, root);
+      return resolved;
+    } catch {
+      /* try the next allowed root */
+    }
+  }
+  throw new PlaywrightMcpError(`Project root ${resolved} is outside the allowed roots`, 'INVALID_PATH', {
+    hint: `projectRoot must be inside ${allowed.join(' or ')}. Start the server with PW_MCP_PROJECT_ROOT, or add the directory to PW_MCP_ALLOWED_ROOTS.`,
+  });
 }
 
 /**
@@ -517,7 +546,7 @@ export async function runBrowserScript(
       [scriptPath, JSON.stringify(config)],
       {
         cwd: config.projectRoot,
-        env: { ...process.env, FORCE_COLOR: '0' },
+        env: childEnv({ FORCE_COLOR: '0' }),
         timeoutMs: options.timeoutMs ?? 45_000,
         signal: options.signal,
       },

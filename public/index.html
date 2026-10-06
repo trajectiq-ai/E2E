@@ -28,7 +28,7 @@
       <p><span class="ok">●</span> Endpoint is live:</p>
       <pre>https://playwright-e2e-mcp.vercel.app/api/mcp</pre>
 
-      <p>It speaks <strong>MCP Streamable HTTP</strong> and exposes the same eight tools as the stdio server:</p>
+      <p>It speaks <strong>MCP Streamable HTTP</strong> and can expose the same eight tools as the stdio server:</p>
       <ul>
         <li><code>run-test</code>, <code>get-failure</code>, <code>list-tests</code></li>
         <li><code>inspect-page</code>, <code>validate-selector</code></li>
@@ -43,8 +43,10 @@
 
       <p>
         This hosted endpoint is for clients that only accept remote connectors (ChatGPT custom
-        connectors, remote MCP clients). Tools that need a browser or a local project run against the
-        files in this deployment and will say so when they cannot.
+        connectors, remote MCP clients). Without a token it serves only the read-only tools
+        (<code>list-tests</code>, <code>get-failure</code>); with <code>Authorization: Bearer &lt;token&gt;</code>
+        it serves all eight. Tools that need a browser or a local project run against the files in
+        this deployment and will say so when they cannot.
       </p>
     </main>
   </body>

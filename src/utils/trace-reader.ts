@@ -28,6 +28,10 @@ import { readFile } from 'node:fs/promises';
 import { gunzipSync, inflateRawSync } from 'node:zlib';
 import { normalizePath } from './path-utils.js';
 
+/** Upper bound for any single decompressed trace entry (zip-bomb guard). */
+const MAX_INFLATED_BYTES = 256 * 1024 * 1024;
+const INFLATE_LIMIT = { maxOutputLength: MAX_INFLATED_BYTES };
+
 /** Cap so one huge trace cannot blow up the tool payload. */
 const MAX_HTML_CHARS = 12_000;
 const MAX_CONTEXT_CHARS = 6_000;
@@ -144,7 +148,7 @@ export function readZipEntries(buf: Buffer): Map<string, Buffer> {
     const raw = buf.subarray(start, end);
     try {
       if (entry.compressionMethod === 0) out.set(name, Buffer.from(raw));
-      else if (entry.compressionMethod === 8) out.set(name, inflateRawSync(raw));
+      else if (entry.compressionMethod === 8) out.set(name, inflateRawSync(raw, INFLATE_LIMIT));
     } catch {
       // Skip unreadable entry; callers surface missing snapshots as warnings.
     }
@@ -576,10 +580,10 @@ function loadFromZip(entries: Map<string, Buffer>, names: string[]): string | un
     const buf = entries.get(name);
     if (!buf) continue;
     try {
-      return gunzipSync(buf).toString('utf8');
+      return gunzipSync(buf, INFLATE_LIMIT).toString('utf8');
     } catch {
       try {
-        return inflateRawSync(buf).toString('utf8');
+        return inflateRawSync(buf, INFLATE_LIMIT).toString('utf8');
       } catch {
         return buf.toString('utf8');
       }
@@ -595,10 +599,10 @@ function loadSnapshotSync(entries: Map<string, Buffer>, hash: string): string | 
 /** Decode a trace entry that may be raw JSON, deflated or gzipped. */
 function decodeEntryText(data: Buffer): string {
   try {
-    return gunzipSync(data).toString('utf8');
+    return gunzipSync(data, INFLATE_LIMIT).toString('utf8');
   } catch {
     try {
-      return inflateRawSync(data).toString('utf8');
+      return inflateRawSync(data, INFLATE_LIMIT).toString('utf8');
     } catch {
       return data.toString('utf8');
     }

@@ -163,8 +163,13 @@ function lineOf(source: string, index: number): number {
   return line;
 }
 
+/** Single-quoted JS string literal; escapes rather than trusting the value. */
 function quote(value: string): string {
-  return value.includes("'") ? `"${value}"` : `'${value}'`;
+  const escaped = value
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/[\r\n\u2028\u2029]+/g, ' ');
+  return `'${escaped}'`;
 }
 
 interface ExtractionPattern {

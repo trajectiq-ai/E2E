@@ -66,7 +66,7 @@ Details and per-client config: [Installation](#installation) ·
 
 | Argument | Type | Description |
 | --- | --- | --- |
-| `projectRoot` | string | Project directory (default: server working directory) |
+| `projectRoot` | string | Project directory inside the configured root (default: server working directory) |
 | `testFiles` | string[] | Files/directories relative to the root; `file:line` supported. Omit to run everything |
 | `grep` | string | Only run tests whose title matches this regex |
 | `browser` | `chromium` \| `firefox` \| `webkit` | Playwright project to run (matched against config project names) |
@@ -77,7 +77,7 @@ Details and per-client config: [Installation](#installation) ·
 | `config` | string | `playwright.config` path **or 1-based index** when the project has several |
 | `retryOnFailure` | boolean | Auto-retry failures **once** before reporting them (default `true`; ignored when `retries` is set) |
 | `lastFailed` | boolean | Only re-run tests that failed in the previous run (Playwright `--last-failed`) — the fast fix → re-run loop |
-| `args` | string[] | Extra CLI flags (shell metacharacters are rejected) |
+| `args` | string[] | Extra Playwright flags from an allowlist (`--repeat-each`, `--max-failures`, `--update-snapshots`, `--shard`, `--trace`, …); flags that take a path, such as `--config` or `--output`, are rejected |
 
 Flakiness handling: by default the server injects `--retries=1` (unless the config
 already sets `retries`), so a test that passes on the retry is reported as **flaky**,
@@ -172,9 +172,9 @@ plain CSS.
 | --- | --- | --- |
 | `description` | string | What the test should cover (required) |
 | `pageUrl` | string | Page the test starts on (default: `baseURL` / `webServer.url` from config) |
-| `testDir` / `file` | string | Where to write the spec (default: detected `testDir` + `generated/<slug>.spec.ts`) |
+| `testDir` / `file` | string | Where to write the spec (default: detected `testDir` + `generated/<slug>.spec.ts`); `file` must end in `.spec.*` or `.test.*` |
 | `write` | boolean | Write the file to disk (default `true`) |
-| `overwrite` | boolean | Replace an existing file at the target path |
+| `overwrite` | boolean | Replace an existing spec at the target path; only specs this tool generated can be replaced |
 | `liveInspect` | boolean | Cross-check selectors against the live page (default on when a URL is known) |
 | `projectRoot` / `config` | string | As with the other tools |
 
@@ -248,7 +248,7 @@ Or grab the packaged tarball from the repo's **GitHub Releases** page and instal
 it locally:
 
 ```bash
-npm install -D https://github.com/trajectiq-ai/E2E/releases/download/v0.1.0/playwright-e2e-mcp-0.1.0.tgz
+npm install -D https://github.com/trajectiq-ai/E2E/releases/download/v0.1.1/playwright-e2e-mcp-0.1.1.tgz
 ```
 
 Listed in the **official [MCP Registry](https://registry.modelcontextprotocol.io/)** as
@@ -345,7 +345,7 @@ Streamable HTTP bridge for exactly that case:
 | --- | --- |
 | **Endpoint** | `https://playwright-e2e-mcp.vercel.app/api/mcp` |
 | **Transport** | MCP Streamable HTTP (`POST` JSON in, JSON or SSE out) |
-| **Auth** | none — the URL is public |
+| **Auth** | optional bearer token (`PW_MCP_HTTP_TOKEN`); without one only read-only tools are served |
 | **Source** | [`api/mcp.ts`](api/mcp.ts) → [`src/http.ts`](src/http.ts) |
 
 The bridge runs the *same* `createServer()` as the stdio transport; the SDK
@@ -353,9 +353,18 @@ serves every request with a fresh server instance, which is what a serverless
 function wants. `test/http-bridge.test.mjs` drives the real Node adapter over
 `node:http` so a broken bridge fails in CI, not in ChatGPT.
 
+**Open vs. token-protected.** When the deployment has no `PW_MCP_HTTP_TOKEN`,
+anyone can reach the URL, so the bridge serves only `list-tests` and
+`get-failure`: nothing that spawns a process, drives a browser or writes a
+file. Set `PW_MCP_HTTP_TOKEN` to serve all eight tools to clients that send
+`Authorization: Bearer <token>`; other requests get `401`. Child processes
+started over HTTP never see secret-looking environment variables (`*TOKEN*`,
+`*SECRET*`, `*KEY*`, …). Set `PW_MCP_ALLOWED_HOSTS` (comma separated) to
+reject requests whose `Host` header is not listed.
+
 **Add it to ChatGPT:** Settings → Connectors → turn on **Advanced → Developer
 mode** → *Create custom connector* → paste the endpoint above → authentication
-**None**.
+**None** (read-only tools).
 
 Codex can also take the remote transport instead of spawning `npx`, if you'd
 rather not ship Playwright to every machine:
@@ -365,11 +374,11 @@ codex mcp add playwright-e2e-remote --url https://playwright-e2e-mcp.vercel.app/
 ```
 
 **What to expect:** `list-tests` works and reports the specs bundled with the
-deployment. Tools that spawn a browser (`run-test`, `inspect-page`,
-`validate-selector`, `diagnose-flaky`, …) cannot download Chromium in a
-serverless function, so they return their normal `NO_PLAYWRIGHT` hint. Use the
-stdio install for real runs; the hosted endpoint is for discovery and for
-clients that cannot run local processes.
+deployment. Even with a token, tools that spawn a browser (`run-test`,
+`inspect-page`, `validate-selector`, `diagnose-flaky`, …) cannot download
+Chromium in a serverless function, so they return their normal `NO_PLAYWRIGHT`
+hint. Use the stdio install for real runs; the hosted endpoint is for discovery
+and for clients that cannot run local processes.
 
 ```bash
 # verify the handshake without any client
@@ -390,6 +399,9 @@ npx vercel deploy --yes --prod --token="$VERCEL_TOKEN"
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
 | `PW_MCP_PROJECT_ROOT` | server cwd | Default project root for every tool |
+| `PW_MCP_ALLOWED_ROOTS` | — | Extra directories a caller may pass as `projectRoot` (`:`-separated, `;` on Windows). Anything outside these and the default root is rejected |
+| `PW_MCP_HTTP_TOKEN` | — | HTTP bridge only: bearer token that unlocks all tools (see above) |
+| `PW_MCP_ALLOWED_HOSTS` | — | HTTP bridge only: comma-separated `Host` allowlist |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` \| `silent` |
 | `LOG_FORMAT` | `text` | `text` or `json` (structured) |
 
@@ -430,15 +442,25 @@ Logs always go to **stderr** — stdout is reserved for the MCP protocol.
 | Syntax error in a spec | `SYNTAX_ERROR` with file:line; nothing crashes; `list-tests` falls back to a source scan |
 | MCP client disconnects | Per-request `AbortSignal` kills the run; stdin end triggers shutdown, and every tracked child tree is force-killed (`killActiveChildren`) |
 | Disk full | `ENOSPC` detected → `DISK_FULL` with a "free space" hint; logging never throws |
-| Malicious paths | `../../etc/passwd`, absolute paths outside the root, URLs and null bytes are rejected with `INVALID_PATH`; CLI args are shell-metacharacter-checked |
+| Malicious paths | `../../etc/passwd`, absolute paths outside the root, a `projectRoot` outside the allowed roots, symlinks that leave the root, URLs and null bytes are rejected with `INVALID_PATH`; extra CLI args must be allowlisted Playwright flags |
 
 ## Security notes
 
 - **No shell**: Playwright is spawned as `node <playwright/cli.js> …` with an argument
-  array — no command interpolation.
-- **Path sandbox**: user paths are resolved lexically and must stay inside the project root.
+  array — no command interpolation. Extra `args` are limited to an allowlist of
+  Playwright flags, so a caller cannot swap in another `--config` or `--output`.
+- **Path sandbox**: user paths must stay inside the project root, checked lexically
+  and again with symlinks resolved. A caller-supplied `projectRoot` must sit inside
+  `PW_MCP_PROJECT_ROOT` (or a `PW_MCP_ALLOWED_ROOTS` entry).
+- **Generated code**: `generate-e2e-test` only writes `*.spec.*` / `*.test.*` files,
+  only overwrites specs it generated itself, and escapes every value it puts into
+  strings or comments.
+- **HTTP bridge**: read-only tools unless `PW_MCP_HTTP_TOKEN` is set; child processes
+  started over HTTP get an environment without secret-looking variables; internal
+  error messages are not returned to clients.
 - **Cleanup**: temp report/script files are written to the OS temp dir and removed;
-  child processes are tracked and killed on shutdown.
+  child processes are tracked and killed on shutdown. Trace and PNG decompression is
+  size-bounded.
 
 ## Development
 
@@ -459,7 +481,7 @@ Zod v4 standard schemas; every tool declares spec tool annotations.
 ```bash
 npm install
 npm run build   # tsc → dist/ (zero errors)
-npm test        # build + test/run-tests.mjs (70 unit tests, any Node ≥20)
+npm test        # build + test/run-tests.mjs (unit tests, any Node ≥20)
 npm run e2e     # build + e2e/run.mjs: live MCP ↔ Playwright integration suite
 ```
 

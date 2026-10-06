@@ -36,6 +36,7 @@ async function main(): Promise<void> {
         '',
         'Connects over stdio (MCP). Configuration via environment:',
         '  PW_MCP_PROJECT_ROOT   default project root (default: cwd)',
+        '  PW_MCP_ALLOWED_ROOTS  extra roots callers may pass as projectRoot',
         '  LOG_LEVEL             debug | info | warn | error | silent (default: info)',
         '  LOG_FORMAT            text | json (default: text)',
         '',

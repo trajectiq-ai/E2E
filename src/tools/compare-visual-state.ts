@@ -14,7 +14,7 @@ import { PlaywrightMcpError } from '../types/index.js';
 import type { ToolContext, ToolResponse } from '../types/index.js';
 import type { RgbaImage, Rgb } from '../utils/image-diff.js';
 import { decodePng, diffImages, encodePng } from '../utils/image-diff.js';
-import { relativeToRoot, resolvePath, tempFilePath } from '../utils/path-utils.js';
+import { assertRealPathInside, relativeToRoot, resolvePath, tempFilePath } from '../utils/path-utils.js';
 import { diagnoseOutput } from '../utils/report-parser.js';
 import {
   assertHttpUrl,
@@ -136,6 +136,8 @@ export const compareVisualStateTool = {
       const visualDir = resolvePath(root, '.pw-mcp/visual');
       const baselinePath = resolvePath(visualDir, `${args.name}.png`);
       const metaPath = resolvePath(visualDir, `${args.name}.json`);
+      // .pw-mcp/ could be a symlink planted in the project; keep writes inside.
+      await assertRealPathInside(visualDir, root);
 
       // 1. Capture a fresh screenshot.
       const shotPath = tempFilePath('pw-shot', '.png');

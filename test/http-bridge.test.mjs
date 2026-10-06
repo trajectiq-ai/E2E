@@ -3,7 +3,8 @@
  * same protocol. This spins the real Node adapter over `node:http` — the same
  * `handleNodeRequest` the deployed function calls — and drives it with the
  * JSON-RPC messages a Streamable HTTP client sends, so a broken bridge fails
- * here rather than in ChatGPT.
+ * here rather than in ChatGPT. With a token the bridge serves every tool;
+ * without one it serves only the read-only ones, so both modes run here.
  */
 
 import { test, before, after } from 'node:test';
@@ -11,22 +12,32 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createMcpHttpHandler, handleNodeRequest } from '../dist/http.js';
 
-const handler = createMcpHttpHandler();
+const TOKEN = 'bridge-test-token';
+const handler = createMcpHttpHandler({ token: TOKEN, allowedHosts: [] });
+const openHandler = createMcpHttpHandler({ token: '', allowedHosts: [] });
 let server;
+let openServer;
 let base;
+let openBase;
+
+async function listen(h) {
+  const srv = http.createServer((req, res) => {
+    void handleNodeRequest(h, req, res);
+  });
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  return { srv, url: `http://127.0.0.1:${srv.address().port}` };
+}
 
 before(async () => {
-  server = http.createServer((req, res) => {
-    void handleNodeRequest(handler, req, res);
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address();
-  base = `http://127.0.0.1:${port}`;
+  ({ srv: server, url: base } = await listen(handler));
+  ({ srv: openServer, url: openBase } = await listen(openHandler));
 });
 
 after(async () => {
   await handler.close().catch(() => undefined);
+  await openHandler.close().catch(() => undefined);
   await new Promise((resolve) => server.close(resolve));
+  await new Promise((resolve) => openServer.close(resolve));
 });
 
 /**
@@ -54,10 +65,15 @@ function firstMessage(text, contentType) {
   return null;
 }
 
-async function post(body, { accept = 'application/json, text/event-stream' } = {}) {
-  const res = await fetch(`${base}/mcp`, {
+async function post(
+  body,
+  { accept = 'application/json, text/event-stream', url = base, token = TOKEN } = {},
+) {
+  const headers = { 'content-type': 'application/json', accept };
+  if (token) headers.authorization = `Bearer ${token}`;
+  const res = await fetch(`${url}/mcp`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', accept },
+    headers,
     body: JSON.stringify(body),
   });
   const text = await res.text();
@@ -137,7 +153,7 @@ test('tools/call round-trips through the adapter', async () => {
 test('GET without a session is rejected, not hung', async () => {
   const res = await fetch(`${base}/mcp`, {
     method: 'GET',
-    headers: { accept: 'text/event-stream' },
+    headers: { accept: 'text/event-stream', authorization: `Bearer ${TOKEN}` },
   });
   assert.ok(res.status >= 400 && res.status < 500, `expected 4xx, got ${res.status}`);
   await res.body?.cancel();
@@ -146,9 +162,52 @@ test('GET without a session is rejected, not hung', async () => {
 test('an unparsable body is a 4xx, never a crash', async () => {
   const res = await fetch(`${base}/mcp`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json',
+      authorization: `Bearer ${TOKEN}`,
+    },
     body: 'not json',
   });
   assert.ok(res.status >= 400 && res.status < 500, `expected 4xx, got ${res.status}`);
   await res.text();
+});
+
+test('a missing or wrong token is a 401 when a token is configured', async () => {
+  for (const token of ['', 'wrong-token']) {
+    const { res } = await post({ jsonrpc: '2.0', id: 9, method: 'tools/list', params: {} }, { token });
+    assert.equal(res.status, 401);
+    assert.match(res.headers.get('www-authenticate') ?? '', /Bearer/);
+  }
+});
+
+test('without a token only read-only tools are served', async () => {
+  const { res, json } = await post(
+    { jsonrpc: '2.0', id: 10, method: 'tools/list', params: {} },
+    { url: openBase, token: '' },
+  );
+  assert.equal(res.status, 200);
+  const names = json.result.tools.map((tool) => tool.name).sort();
+  assert.deepEqual(names, ['get-failure', 'list-tests']);
+});
+
+test('the Host allowlist rejects unexpected hosts', async () => {
+  const strict = createMcpHttpHandler({ token: TOKEN, allowedHosts: ['example.test'] });
+  try {
+    const res = await strict.fetch(
+      new Request('http://evil.test/mcp', {
+        method: 'POST',
+        headers: {
+          host: 'evil.test',
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${TOKEN}`,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 11, method: 'tools/list', params: {} }),
+      }),
+    );
+    assert.equal(res.status, 403);
+  } finally {
+    await strict.close().catch(() => undefined);
+  }
 });

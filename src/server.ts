@@ -111,10 +111,11 @@ const TOOLS: ToolSpec[] = [
   {
     ...generateE2ETestTool,
     title: 'Generate an E2E test',
-    // Writes a new spec under tests/generated/ (never edits existing files).
+    // Writes a spec file; with overwrite it replaces a spec it generated
+    // earlier, never any other file.
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: false,
       openWorldHint: false,
     },
@@ -151,7 +152,15 @@ export interface CreateServerOptions {
   projectRoot?: string;
   /** Share a store across servers (tests). */
   store?: ToolStore;
+  /** Register only these tools (default: all). Used by the hosted HTTP bridge. */
+  tools?: readonly string[];
 }
+
+/**
+ * Tools that neither spawn processes, drive a browser nor write files.
+ * The HTTP bridge serves only these unless it is protected by a token.
+ */
+export const READ_ONLY_TOOLS: readonly string[] = ['list-tests', 'get-failure'];
 
 export function resolveDefaultProjectRoot(): string {
   const fromEnv = process.env.PW_MCP_PROJECT_ROOT;
@@ -180,7 +189,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
   const store = options.store ?? createToolStore();
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
-  for (const tool of TOOLS) {
+  const enabled = options.tools ? TOOLS.filter((tool) => options.tools?.includes(tool.name)) : TOOLS;
+  for (const tool of enabled) {
     server.registerTool(
       tool.name,
       {
@@ -209,7 +219,7 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     );
   }
 
-  logger.debug('server created', { version: SERVER_VERSION, projectRoot, tools: TOOLS.length });
+  logger.debug('server created', { version: SERVER_VERSION, projectRoot, tools: enabled.length });
   return server;
 }
 

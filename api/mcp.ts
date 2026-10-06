@@ -3,6 +3,9 @@
  * HTTP. The handler is created once per warm lambda; each request still gets
  * its own server instance (the SDK's stateless mode), so no session state
  * survives between requests.
+ *
+ * Set PW_MCP_HTTP_TOKEN in the Vercel project to serve all tools to callers
+ * that send it as a bearer token; without it only read-only tools are served.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';

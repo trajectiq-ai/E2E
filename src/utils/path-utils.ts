@@ -1,14 +1,16 @@
 /**
  * Cross-platform path handling.
  *
- * All path logic here is *lexical* (string based, no fs access) so that
+ * Most path logic here is *lexical* (string based, no fs access) so that
  * Windows paths behave correctly when unit tests run on macOS/Linux and
  * vice versa. Backslashes are normalized everywhere, drive letters and
  * UNC prefixes are preserved, and user-supplied paths are sandboxed to
  * the project root to block "../../etc/passwd" style escapes.
+ * realPathLenient / assertRealPathInside add the symlink-aware check.
  */
 
 import { randomBytes } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PlaywrightMcpError } from '../types/index.js';
@@ -162,7 +164,7 @@ export function sanitizeUserPath(input: unknown, projectRoot: string): string {
 
   if (!isPathInside(resolved, root)) {
     throw new PlaywrightMcpError(`Path "${raw}" resolves outside the project root`, 'INVALID_PATH', {
-      hint: `Only paths inside ${root} are allowed. Directory traversal (..), absolute paths outside the project, and symlinks out of the project are rejected.`,
+      hint: `Only paths inside ${root} are allowed. Directory traversal (..) and absolute paths outside the project are rejected.`,
       details: `resolved=${resolved}`,
     });
   }
@@ -207,8 +209,43 @@ export function isTestFile(p: string): boolean {
 }
 
 /**
- * Validate a free-form CLI argument list: rejects NUL bytes and
- * shell-looking metacharacters that could smuggle extra commands.
+ * Playwright CLI flags callers may pass through `args`. Anything that
+ * points Playwright at another file or directory (--config, --output,
+ * --tsconfig, --reporter…) or blocks the run (--ui) is deliberately absent:
+ * those would bypass the project-root sandbox and the checked config.
+ */
+const ALLOWED_CLI_FLAGS = new Set([
+  '--headed',
+  '--debug',
+  '--project',
+  '--repeat-each',
+  '--max-failures',
+  '-x',
+  '--fail-on-flaky-tests',
+  '--forbid-only',
+  '--fully-parallel',
+  '--global-timeout',
+  '--grep-invert',
+  '--pass-with-no-tests',
+  '--quiet',
+  '--shard',
+  '--trace',
+  '--update-snapshots',
+  '-u',
+  '--ignore-snapshots',
+  '--no-deps',
+  '--only-changed',
+  '--workers',
+  '-j',
+  '--retries',
+  '--timeout',
+  '--list',
+]);
+
+/**
+ * Validate one extra Playwright CLI argument: rejects NUL bytes and
+ * shell-looking metacharacters, and only lets through flags from
+ * ALLOWED_CLI_FLAGS (in `--flag` or `--flag=value` form).
  */
 export function sanitizeCliArg(arg: string): string {
   const raw = typeof arg === 'string' ? arg.trim() : '';
@@ -220,5 +257,46 @@ export function sanitizeCliArg(arg: string): string {
       hint: 'Arguments are executed directly (no shell); remove ; & | > < ` $ characters.',
     });
   }
+  const flag = raw.split('=')[0];
+  if (!ALLOWED_CLI_FLAGS.has(flag)) {
+    throw new PlaywrightMcpError(`Argument "${raw}" is not an allowed Playwright flag`, 'INVALID_PATH', {
+      hint: `Allowed flags: ${[...ALLOWED_CLI_FLAGS].join(', ')}. Pass test files via testFiles and the config via config.`,
+    });
+  }
   return raw;
+}
+
+/**
+ * Symlink-resolved form of `p`. When `p` does not exist yet (a file about
+ * to be written), its nearest existing ancestor is resolved and the
+ * missing tail re-appended, so a symlinked parent directory is still seen.
+ */
+export async function realPathLenient(p: string): Promise<string> {
+  const normalized = normalizePath(p);
+  const tail: string[] = [];
+  let current = normalized;
+  for (;;) {
+    try {
+      const real = normalizePath(await realpath(toNativePath(current)));
+      return tail.length === 0 ? real : normalizePath(`${real}/${tail.reverse().join('/')}`);
+    } catch {
+      const parent = normalizePath(path.posix.dirname(current));
+      if (parent === current || parent === '' || parent === '.') return normalized;
+      tail.push(path.posix.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * Filesystem-aware companion to sanitizeUserPath: throws INVALID_PATH when
+ * `target`, after resolving symlinks, is not inside `root` (also resolved).
+ */
+export async function assertRealPathInside(target: string, root: string): Promise<void> {
+  const [realTarget, realRoot] = await Promise.all([realPathLenient(target), realPathLenient(root)]);
+  if (!isPathInside(realTarget, realRoot)) {
+    throw new PlaywrightMcpError(`Path "${normalizePath(target)}" resolves outside the project root`, 'INVALID_PATH', {
+      hint: `A symlink points outside ${normalizePath(root)}. Only paths inside the project root are allowed.`,
+    });
+  }
 }

@@ -31,6 +31,7 @@ import {
 import { selectConfig } from '../utils/project-detector.js';
 import { childEnv, runProcess } from '../utils/playwright-runner.js';
 import { extractJsonFromText } from '../utils/report-parser.js';
+import { BLOCKED_RANGES, blockPrivateUrls } from '../utils/url-policy.js';
 
 /* ------------------------------------------------------------------ */
 /* State + responses                                                   */
@@ -318,6 +319,81 @@ function classifyError(message) {
   return { kind: 'UNKNOWN', hint: undefined };
 }
 
+async function startGuardProxy(ranges) {
+  const http = require('node:http');
+  const net = require('node:net');
+  const dns = require('node:dns').promises;
+  const blocked = new net.BlockList();
+  for (const r of ranges) blocked.addSubnet(r.address, r.prefix, r.family);
+  const isBlocked = (a) => {
+    const m = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(a);
+    if (m) return blocked.check(m[1], 'ipv4');
+    const f = net.isIP(a);
+    return f === 4 ? blocked.check(a, 'ipv4') : f === 6 ? blocked.check(a, 'ipv6') : true;
+  };
+  // Resolve once and connect to that exact address, so DNS cannot change
+  // between the check and the connection.
+  const allowedAddress = async (host) => {
+    const bare = host.replace(/^\[|\]$/g, '');
+    const addrs = net.isIP(bare) ? [bare] : (await dns.lookup(bare, { all: true, verbatim: true })).map((x) => x.address);
+    if (addrs.length === 0 || addrs.some(isBlocked)) return null;
+    return addrs[0];
+  };
+  const server = http.createServer(async (req, res) => {
+    let target;
+    try {
+      target = new URL(req.url);
+    } catch (err) {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
+    const ip = await allowedAddress(target.hostname).catch(() => null);
+    if (!ip) {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('Blocked by playwright-e2e-mcp: private or reserved address');
+      return;
+    }
+    const upstream = http.request(
+      { host: ip, port: target.port || 80, method: req.method, path: target.pathname + target.search, headers: { ...req.headers, host: target.host } },
+      (up) => {
+        res.writeHead(up.statusCode || 502, up.headers);
+        up.pipe(res);
+      },
+    );
+    upstream.on('error', () => {
+      if (!res.headersSent) res.writeHead(502);
+      res.end();
+    });
+    req.pipe(upstream);
+  });
+  server.on('connect', async (req, socket, head) => {
+    socket.on('error', () => undefined);
+    let target;
+    try {
+      target = new URL('http://' + req.url);
+    } catch (err) {
+      socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+      return;
+    }
+    const ip = await allowedAddress(target.hostname).catch(() => null);
+    if (!ip) {
+      socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+      return;
+    }
+    const upstream = net.connect(Number(target.port) || 443, ip, () => {
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head && head.length) upstream.write(head);
+      upstream.pipe(socket);
+      socket.pipe(upstream);
+    });
+    upstream.on('error', () => socket.destroy());
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  server.unref();
+  return server.address().port;
+}
+
 (async () => {
   const { createRequire } = require('node:module');
   const req = createRequire(cfg.projectRoot + '/package.json');
@@ -340,7 +416,16 @@ function classifyError(message) {
 
   let browser = null;
   try {
-    browser = await pw.chromium.launch({ headless: true });
+    const launchOptions = { headless: true };
+    if (cfg.blockPrivate) {
+      // SSRF guard: every browser connection (each redirect hop and
+      // subresource too) goes through this local proxy, which resolves
+      // the host itself and refuses blocked ranges before connecting.
+      const proxyPort = await startGuardProxy(cfg.blockedRanges || []);
+      launchOptions.proxy = { server: 'http://127.0.0.1:' + proxyPort };
+      launchOptions.args = ['--proxy-bypass-list=<-loopback>'];
+    }
+    browser = await pw.chromium.launch(launchOptions);
     const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
     const page = await context.newPage();
 
@@ -543,7 +628,7 @@ export async function runBrowserScript(
   try {
     const outcome = await runProcess(
       process.execPath,
-      [scriptPath, JSON.stringify(config)],
+      [scriptPath, JSON.stringify({ ...config, blockPrivate: blockPrivateUrls(), blockedRanges: BLOCKED_RANGES })],
       {
         cwd: config.projectRoot,
         env: childEnv({ FORCE_COLOR: '0' }),

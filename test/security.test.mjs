@@ -2,7 +2,8 @@
  * Regression tests for the sandbox and code-generation hardening: a caller
  * must not be able to pick a project root outside the configured one,
  * escape it through a symlink, smuggle path-taking Playwright flags,
- * overwrite non-generated files, or inject code into a generated spec.
+ * overwrite non-generated files, inject code into a generated spec, or
+ * (with the SSRF guard on) point the URL tools at a private address.
  */
 
 import { test, before, after } from 'node:test';
@@ -15,6 +16,8 @@ import { createToolStore, resolveProjectRoot } from '../dist/tools/shared.js';
 import { generateE2ETestTool } from '../dist/tools/generate-e2e-test.js';
 import { normalizePath, sanitizeCliArg } from '../dist/utils/path-utils.js';
 import { logger } from '../dist/utils/logger.js';
+import { assertUrlAllowed, isBlockedAddress, setBlockPrivateUrls } from '../dist/utils/url-policy.js';
+import { inspectPageTool } from '../dist/tools/inspect-page.js';
 
 let base;
 let root;
@@ -129,4 +132,29 @@ test('a crafted description cannot inject code into the generated spec', async (
   const run = spawnSync(process.execPath, [`${base}/inject-check.mjs`], { encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr);
   assert.equal(run.stdout.trim(), 'inert');
+});
+
+test('private, loopback and metadata addresses are recognized', () => {
+  for (const address of ['127.0.0.1', '10.1.2.3', '172.20.0.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '::1', 'fd00::1', 'fe80::1', '::ffff:10.0.0.1']) {
+    assert.equal(isBlockedAddress(address), true, address);
+  }
+  for (const address of ['8.8.8.8', '1.1.1.1', '2606:4700:4700::1111']) {
+    assert.equal(isBlockedAddress(address), false, address);
+  }
+});
+
+test('URL tools refuse private addresses only when the guard is on', async () => {
+  setBlockPrivateUrls(false);
+  await assertUrlAllowed('http://localhost:3000/');
+  setBlockPrivateUrls(true);
+  try {
+    for (const url of ['http://localhost:3000/', 'http://169.254.169.254/latest/meta-data/', 'http://[::1]/', 'http://10.0.0.5:8080/']) {
+      await assert.rejects(assertUrlAllowed(url), (err) => err.kind === 'INVALID_PATH', url);
+    }
+    const result = await inspectPageTool.handler({ url: 'http://169.254.169.254/' }, ctxFor(root));
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /private or reserved address/);
+  } finally {
+    setBlockPrivateUrls(false);
+  }
 });

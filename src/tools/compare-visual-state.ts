@@ -24,6 +24,7 @@ import {
   toolError,
   toolText,
 } from './shared.js';
+import { assertUrlAllowed } from '../utils/url-policy.js';
 
 const compareInput = z.object({
   url: z.string().describe('Full URL of the page (or element target) to capture'),
@@ -130,6 +131,7 @@ export const compareVisualStateTool = {
     guard('compare-visual-state', async () => {
       const root = await resolveProjectRoot(args.projectRoot, ctx);
       const url = assertHttpUrl(args.url);
+      await assertUrlAllowed(url);
       const tolerance = args.tolerance ?? 0.1;
       const timeoutMs = args.timeoutMs ?? 45_000;
 

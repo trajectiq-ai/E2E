@@ -15,6 +15,7 @@ import {
   toolError,
   toolText,
 } from './shared.js';
+import { assertUrlAllowed } from '../utils/url-policy.js';
 
 const validateSelectorInput = z.object({
   url: z.string().describe('Full URL of the live page to test against (http/https)'),
@@ -45,6 +46,7 @@ export const validateSelectorTool = {
   handler: async (args: ValidateSelectorInput, ctx: ToolContext): Promise<ToolResponse> =>
     guard('validate-selector', async () => {
       const url = assertHttpUrl(args.url);
+      await assertUrlAllowed(url);
       const selector = args.selector.trim();
 
       if (ENGINE_RE.test(selector)) {

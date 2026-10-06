@@ -16,6 +16,7 @@ import {
   toolError,
   toolText,
 } from './shared.js';
+import { assertUrlAllowed } from '../utils/url-policy.js';
 
 const inspectPageInput = z.object({
   url: z.string().describe('Full URL of the page to open (http/https)'),
@@ -78,6 +79,7 @@ export const inspectPageTool = {
   handler: async (args: InspectPageInput, ctx: ToolContext): Promise<ToolResponse> =>
     guard('inspect-page', async () => {
       const url = assertHttpUrl(args.url);
+      await assertUrlAllowed(url);
       const root = await resolveProjectRoot(args.projectRoot, ctx);
       const timeoutMs = args.timeoutMs ?? 45_000;
 

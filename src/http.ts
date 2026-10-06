@@ -19,6 +19,7 @@ import { createMcpHandler, hostHeaderValidationResponse } from '@modelcontextpro
 import type { McpHttpHandler } from '@modelcontextprotocol/server';
 import { createServer, READ_ONLY_TOOLS } from './server.js';
 import { setScrubChildEnv } from './utils/playwright-runner.js';
+import { setBlockPrivateUrls } from './utils/url-policy.js';
 import { logger } from './utils/logger.js';
 
 /** Mirrors the SDK's default POST body bound, so oversized bodies die early. */
@@ -66,8 +67,10 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
 export function createMcpHttpHandler(options: McpHttpHandlerOptions = {}): McpHttpHandler {
   const token = (options.token ?? process.env.PW_MCP_HTTP_TOKEN ?? '').trim();
   const allowedHosts = options.allowedHosts ?? envList(process.env.PW_MCP_ALLOWED_HOSTS);
-  // Children spawned on behalf of HTTP callers must not see deployment secrets.
+  // Children spawned on behalf of HTTP callers must not see deployment
+  // secrets, and URL tools must not reach the deployment's private network.
   setScrubChildEnv(true);
+  setBlockPrivateUrls(true);
   if (!token) {
     logger.warn('PW_MCP_HTTP_TOKEN is not set; serving read-only tools only', { tools: READ_ONLY_TOOLS });
   }

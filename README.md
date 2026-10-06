@@ -402,6 +402,7 @@ npx vercel deploy --yes --prod --token="$VERCEL_TOKEN"
 | `PW_MCP_ALLOWED_ROOTS` | — | Extra directories a caller may pass as `projectRoot` (`:`-separated, `;` on Windows). Anything outside these and the default root is rejected |
 | `PW_MCP_HTTP_TOKEN` | — | HTTP bridge only: bearer token that unlocks all tools (see above) |
 | `PW_MCP_ALLOWED_HOSTS` | — | HTTP bridge only: comma-separated `Host` allowlist |
+| `PW_MCP_BLOCK_PRIVATE_URLS` | off (on for the HTTP bridge) | `1` makes the URL tools refuse loopback, private-network and cloud-metadata addresses, including redirects and subresources |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` \| `silent` |
 | `LOG_FORMAT` | `text` | `text` or `json` (structured) |
 
@@ -458,6 +459,11 @@ Logs always go to **stderr** — stdout is reserved for the MCP protocol.
 - **HTTP bridge**: read-only tools unless `PW_MCP_HTTP_TOKEN` is set; child processes
   started over HTTP get an environment without secret-looking variables; internal
   error messages are not returned to clients.
+- **SSRF guard**: on the HTTP bridge (or with `PW_MCP_BLOCK_PRIVATE_URLS=1`) the URL tools
+  refuse hosts that resolve to loopback, private, link-local/metadata or reserved
+  addresses, and route the browser through a local proxy that applies the same check
+  to every redirect hop and subresource. It is off for stdio by default because
+  opening `http://localhost` dev servers is what these tools are for.
 - **Cleanup**: temp report/script files are written to the OS temp dir and removed;
   child processes are tracked and killed on shutdown. Trace and PNG decompression is
   size-bounded.

@@ -13,7 +13,8 @@
 // Requires devDependencies installed (uses @playwright/test's Chromium).
 
 import { chromium } from '@playwright/test';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -128,15 +129,20 @@ const browser = await chromium.launch(
 );
 try {
   for (const [name, html] of shots) {
-    const file = join(root, '.demo-page.html');
+    // The scratch page lives in the OS temp dir, never in the repo.
+    const file = join(tmpdir(), `pw-mcp-demo-${name}.html`);
     writeFileSync(file, html);
-    const p = await browser.newPage({ viewport: { width: 1010, height: 900 }, deviceScaleFactor: 2 });
-    await p.goto(pathToFileURL(file).href);
-    // clip to the card's real height so the image has no dead space at the bottom
-    const height = await p.evaluate(() => Math.ceil(document.body.scrollHeight));
-    await p.screenshot({ path: join(outDir, name), clip: { x: 0, y: 0, width: 1010, height } });
-    await p.close();
-    console.log('wrote', join('docs', name));
+    try {
+      const p = await browser.newPage({ viewport: { width: 1010, height: 900 }, deviceScaleFactor: 2 });
+      await p.goto(pathToFileURL(file).href);
+      // clip to the card's real height so the image has no dead space at the bottom
+      const height = await p.evaluate(() => Math.ceil(document.body.scrollHeight));
+      await p.screenshot({ path: join(outDir, name), clip: { x: 0, y: 0, width: 1010, height } });
+      await p.close();
+      console.log('wrote', join('docs', name));
+    } finally {
+      rmSync(file, { force: true });
+    }
   }
 } finally {
   await browser.close();

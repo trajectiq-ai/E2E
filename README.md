@@ -396,11 +396,9 @@ curl -X POST https://playwright-e2e-mcp.vercel.app/api/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}'
 ```
 
-Redeploy after a change:
-
-```bash
-npx vercel deploy --yes --prod --token="$VERCEL_TOKEN"
-```
+Redeploy after a change: merge to `main`. Vercel's Git integration deploys
+every push, so there is no token to manage and no CLI step — watch the
+`Vercel` commit status for the deployment result.
 
 ## Configuration
 

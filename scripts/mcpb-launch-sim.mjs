@@ -3,7 +3,7 @@
  * Launch simulation for the .mcpb bundle.
  *
  * Mimics what Claude Desktop does on install: substitute ${__dirname},
- * ${HOME} (default) and ${user_config.project_root} in mcp_config, spawn
+ * ${HOME} and ${user_config.project_root} in mcp_config, spawn
  * the entry, and complete an MCP initialize handshake. Also asserts the
  * unsubstituted-placeholder fallback (host without user_config support).
  *

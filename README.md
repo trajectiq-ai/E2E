@@ -19,17 +19,19 @@ with unique CSS selectors, and validate the replacement selector before re-runni
 
 ## Demo
 
-**Live endpoint** — a real `initialize` + `tools/list` round-trip against
-`https://playwright-e2e-mcp.vercel.app/api/mcp`:
+**Hosted endpoint** — what an `initialize` + `tools/list` round-trip against
+`https://playwright-e2e-mcp.vercel.app/api/mcp` returns for a client that sends the
+bearer token (without one, only `list-tests` and `get-failure` are listed):
 
-![Live endpoint: initialize handshake and all 8 tools](https://raw.githubusercontent.com/trajectiq-ai/E2E/main/docs/demo-endpoint.png)
+![Token-protected endpoint: initialize handshake and all 8 tools](https://raw.githubusercontent.com/trajectiq-ai/E2E/main/docs/demo-endpoint.png)
 
 **A real test run** — `run-test` served over stdio by `npx -y playwright-e2e-mcp`
 against the bundled `examples/sample-test.spec.ts` (actual output, unedited):
 
 ![run-test result: 4 passed, 0 failed, 5.1s](https://raw.githubusercontent.com/trajectiq-ai/E2E/main/docs/demo-run-test.png)
 
-Images are generated from real captured output with `node scripts/gen-demo-images.mjs`.
+Images are rendered with `node scripts/gen-demo-images.mjs`: the run-test card is real
+captured output; the endpoint card is an illustration of the authenticated listing.
 
 ## Install
 
@@ -40,7 +42,7 @@ and every other MCP client — pick whichever route fits:
 | --- | --- |
 | **npm (canonical, fastest)** | `npx -y playwright-e2e-mcp` |
 | **MCP Registry** (registry-aware clients discover it automatically) | `io.github.trajectiq-ai/E2E` — [listing](https://registry.modelcontextprotocol.io/) |
-| **Any client, no npm account needed** | `npx -y github:trajectiq-ai/E2E` |
+| **Any client, no npm account needed** | `npx -y github:trajectiq-ai/E2E#v0.1.2` (pin a release tag) |
 | **Claude Desktop, zero Node setup** | double-click the [`.mcpb` extension](https://github.com/trajectiq-ai/E2E/releases) |
 | **Remote-only clients (ChatGPT connectors)** | `https://playwright-e2e-mcp.vercel.app/api/mcp` |
 
@@ -77,7 +79,7 @@ Details and per-client config: [Installation](#installation) ·
 | `config` | string | `playwright.config` path **or 1-based index** when the project has several |
 | `retryOnFailure` | boolean | Auto-retry failures **once** before reporting them (default `true`; ignored when `retries` is set) |
 | `lastFailed` | boolean | Only re-run tests that failed in the previous run (Playwright `--last-failed`) — the fast fix → re-run loop |
-| `args` | string[] | Extra Playwright flags from an allowlist (`--repeat-each`, `--max-failures`, `--update-snapshots`, `--shard`, `--trace`, …); flags that take a path, such as `--config` or `--output`, are rejected |
+| `args` | string[] | Extra Playwright flags from an allowlist (`--repeat-each=N`, `--max-failures=N`, `--update-snapshots`, `--shard=1/3`, `--trace=on`, …); values go after `=` and are checked, and flags that take a path, such as `--config` or `--output`, are rejected |
 
 Flakiness handling: by default the server injects `--retries=1` (unless the config
 already sets `retries`), so a test that passes on the retry is reported as **flaky**,
@@ -236,11 +238,12 @@ Requirements:
   (`npx playwright install chromium`)
 
 **No npm account needed** — install straight from GitHub (the `prepare` script
-builds `dist/` automatically on install):
+builds `dist/` automatically on install). Pin a release tag: an unpinned
+`github:trajectiq-ai/E2E` runs whatever is on the default branch at that moment.
 
 ```bash
-npx -y github:trajectiq-ai/E2E
-npm install -D github:trajectiq-ai/E2E @playwright/test   # or as a project dependency
+npx -y github:trajectiq-ai/E2E#v0.1.2
+npm install -D github:trajectiq-ai/E2E#v0.1.2 @playwright/test   # or as a project dependency
 npx playwright install chromium
 ```
 
@@ -248,7 +251,7 @@ Or grab the packaged tarball from the repo's **GitHub Releases** page and instal
 it locally:
 
 ```bash
-npm install -D https://github.com/trajectiq-ai/E2E/releases/download/v0.1.1/playwright-e2e-mcp-0.1.1.tgz
+npm install -D https://github.com/trajectiq-ai/E2E/releases/download/v0.1.2/playwright-e2e-mcp-0.1.2.tgz
 ```
 
 Listed in the **official [MCP Registry](https://registry.modelcontextprotocol.io/)** as
@@ -264,7 +267,7 @@ Listed in the **official [MCP Registry](https://registry.modelcontextprotocol.io
   "mcpServers": {
     "playwright-e2e": {
       "command": "npx",
-      "args": ["-y", "github:trajectiq-ai/E2E"],
+      "args": ["-y", "github:trajectiq-ai/E2E#v0.1.2"],
       "env": { "PW_MCP_PROJECT_ROOT": "/absolute/path/to/your/project" }
     }
   }
@@ -278,8 +281,8 @@ when the client launches it somewhere else (e.g. your home directory).
 **Codex / VS Code / Copilot CLIs:**
 
 ```bash
-codex mcp add playwright-e2e -- npx -y github:trajectiq-ai/E2E
-code --add-mcp '{"name":"playwright-e2e","command":"npx","args":["-y","github:trajectiq-ai/E2E"]}'
+codex mcp add playwright-e2e -- npx -y github:trajectiq-ai/E2E#v0.1.2
+code --add-mcp '{"name":"playwright-e2e","command":"npx","args":["-y","github:trajectiq-ai/E2E#v0.1.2"]}'
 ```
 
 Codex's defaults fight this server: the first launch clones the repo and runs
@@ -290,7 +293,7 @@ Codex's defaults fight this server: the first launch clones the repo and runs
 ```toml
 [mcp_servers.playwright-e2e]
 command = "npx"
-args = ["-y", "github:trajectiq-ai/E2E"]
+args = ["-y", "github:trajectiq-ai/E2E#v0.1.2"]
 startup_timeout_sec = 60
 tool_timeout_sec = 600
 ```
@@ -298,13 +301,14 @@ tool_timeout_sec = 600
 **Claude Desktop (one-click):** download and double-click the `.mcpb` Desktop
 Extension attached to the [latest release](https://github.com/trajectiq-ai/E2E/releases) —
 the bundle ships its own dependencies, so no Node setup is required. On install it
-prompts once for your **project root** (defaults to your home folder) and wires it
+asks you to pick your **project root** (required, no default: choose the project
+folder, not your home directory) and wires it
 into `PW_MCP_PROJECT_ROOT`, so the tools point at a real project from the first call.
 
 **Claude Code:**
 
 ```bash
-claude mcp add playwright-e2e -- npx -y github:trajectiq-ai/E2E
+claude mcp add playwright-e2e -- npx -y github:trajectiq-ai/E2E#v0.1.2
 ```
 
 **Gemini CLI / Qwen Code:** paste the `mcpServers` block above into
@@ -355,12 +359,16 @@ function wants. `test/http-bridge.test.mjs` drives the real Node adapter over
 
 **Open vs. token-protected.** When the deployment has no `PW_MCP_HTTP_TOKEN`,
 anyone can reach the URL, so the bridge serves only `list-tests` and
-`get-failure`: nothing that spawns a process, drives a browser or writes a
-file. Set `PW_MCP_HTTP_TOKEN` to serve all eight tools to clients that send
-`Authorization: Bearer <token>`; other requests get `401`. Child processes
-started over HTTP never see secret-looking environment variables (`*TOKEN*`,
-`*SECRET*`, `*KEY*`, …). Set `PW_MCP_ALLOWED_HOSTS` (comma separated) to
-reject requests whose `Host` header is not listed.
+`get-failure`, in restricted mode: `list-tests` scans sources instead of running
+`playwright test --list` (which would execute the project's config), callers
+cannot pick another `projectRoot`, and nothing spawns a process, drives a browser
+or writes a file. Set `PW_MCP_HTTP_TOKEN` (at least 16 characters; use a random
+value) to serve all eight tools to clients that send `Authorization: Bearer <token>`;
+other requests get `401`. Child processes started over HTTP get only an allowlisted
+environment. `PW_MCP_ALLOWED_HOSTS` (comma separated, `*` for any) limits the
+accepted `Host` header; without a token and without that variable, only
+`localhost` names and the deployment's own Vercel hostnames are accepted
+(DNS-rebinding protection).
 
 **Add it to ChatGPT:** Settings → Connectors → turn on **Advanced → Developer
 mode** → *Create custom connector* → paste the endpoint above → authentication
@@ -400,8 +408,8 @@ npx vercel deploy --yes --prod --token="$VERCEL_TOKEN"
 | --- | --- | --- |
 | `PW_MCP_PROJECT_ROOT` | server cwd | Default project root for every tool |
 | `PW_MCP_ALLOWED_ROOTS` | — | Extra directories a caller may pass as `projectRoot` (`:`-separated, `;` on Windows). Anything outside these and the default root is rejected |
-| `PW_MCP_HTTP_TOKEN` | — | HTTP bridge only: bearer token that unlocks all tools (see above) |
-| `PW_MCP_ALLOWED_HOSTS` | — | HTTP bridge only: comma-separated `Host` allowlist |
+| `PW_MCP_HTTP_TOKEN` | — | HTTP bridge only: bearer token (16+ characters) that unlocks all tools (see above) |
+| `PW_MCP_ALLOWED_HOSTS` | localhost + Vercel hostnames when there is no token | HTTP bridge only: comma-separated `Host` allowlist; `*` accepts any |
 | `PW_MCP_PASSTHROUGH_ENV` | — | HTTP bridge only: comma-separated extra variables passed to test runs (e.g. `BASE_URL`) |
 | `PW_MCP_MAX_CHILDREN` | `4` | HTTP bridge only: how many test runs and browser probes may run at once |
 | `PW_MCP_BLOCK_PRIVATE_URLS` | off (on for the HTTP bridge) | `1` makes the URL tools refuse loopback, private-network and cloud-metadata addresses, including redirects and subresources |
@@ -451,26 +459,36 @@ Logs always go to **stderr** — stdout is reserved for the MCP protocol.
 
 - **No shell**: Playwright is spawned as `node <playwright/cli.js> …` with an argument
   array — no command interpolation. Extra `args` are limited to an allowlist of
-  Playwright flags, so a caller cannot swap in another `--config` or `--output`.
+  Playwright flags, each with a checked value (`--flag=value`), so a caller cannot
+  swap in another `--config` or `--output` or hand git an option through
+  `--only-changed`. Paths with a segment starting with `-` are rejected, so a test
+  file name cannot be read as a flag.
 - **Path sandbox**: user paths must stay inside the project root, checked lexically
   and again with symlinks resolved. A caller-supplied `projectRoot` must sit inside
   `PW_MCP_PROJECT_ROOT` (or a `PW_MCP_ALLOWED_ROOTS` entry).
 - **Generated code**: `generate-e2e-test` only writes `*.spec.*` / `*.test.*` files,
-  only overwrites specs it generated itself, and escapes every value it puts into
-  strings or comments.
+  only overwrites specs whose header it wrote itself, never writes through a symlink,
+  and escapes every value it puts into strings or comments.
 - **HTTP bridge**: read-only tools unless `PW_MCP_HTTP_TOKEN` is set; child processes
   started over HTTP get only an allowlisted environment (`PATH`, `HOME`, temp dirs,
-  locale, `CI`, `PLAYWRIGHT_*`, `npm_config_*`, plus anything in
-  `PW_MCP_PASSTHROUGH_ENV`), at most `PW_MCP_MAX_CHILDREN` run at once, and internal
-  error messages are not returned to clients.
+  locale, `CI`, `PLAYWRIGHT_*`, `npm_config_*` without embedded credentials, plus
+  anything in `PW_MCP_PASSTHROUGH_ENV`), at most `PW_MCP_MAX_CHILDREN` run at once
+  (a disconnected client frees its slot immediately), and internal error messages
+  are not returned to clients. The allowlist only covers the child's own
+  environment: test code runs as the same OS user, so on Linux it could still read
+  the server's startup environment from `/proc`. That is why only token holders
+  can run project code; keep other secrets out of the bridge's environment, or run
+  it under a separate user.
 - **SSRF guard**: on the HTTP bridge (or with `PW_MCP_BLOCK_PRIVATE_URLS=1`) the URL tools
   refuse hosts that resolve to loopback, private, link-local/metadata or reserved
   addresses, and route the browser through a local proxy that applies the same check
-  to every redirect hop and subresource. It is off for stdio by default because
+  to every redirect hop and subresource; IPv6 forms that embed an IPv4 address
+  (mapped, NAT64, 6to4, Teredo) are blocked too, and WebRTC UDP is disabled so a
+  page cannot reach the network around the proxy. It is off for stdio by default because
   opening `http://localhost` dev servers is what these tools are for.
 - **Cleanup**: temp report/script files are written to the OS temp dir and removed;
-  child processes are tracked and killed on shutdown. Trace and PNG decompression is
-  size-bounded.
+  child processes are tracked and killed on shutdown. Trace decompression has one
+  size budget per archive, and PNGs are capped at 16,384 px per side and 50 M pixels.
 
 ## Development
 
@@ -501,8 +519,12 @@ discovery, multiple configs, missing install, test-file scanning), the shared to
 helpers, the **trace reader** (synthetic trace.zip: error, failed action, DOM snapshot,
 `*.network` failed-request parsing, console error/warning events), the **image diff**
 (PNG round-trip, regions, color shift, dimension changes), the **change analyzer**
-(selector extraction, git + mtime paths) and the **flaky verdict logic**
-(failure signatures, CONSISTENTLY FAILING / FLAKY / NOT REPRODUCING / NO TESTS RAN).
+(selector extraction, git + mtime paths), the **flaky verdict logic**
+(failure signatures, CONSISTENTLY FAILING / FLAKY / NOT REPRODUCING / NO TESTS RAN),
+the **HTTP bridge** (token, restricted mode, Host allowlist), the **security
+regressions** (sandbox escapes, argument smuggling, symlink writes, code injection,
+SSRF ranges, env scrubbing, decode limits), the `.mcpb` manifest and the MCP config
+files.
 
 ### Integration suite (`npm run e2e`)
 

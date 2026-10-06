@@ -1,9 +1,10 @@
 // Generates the README demo images (docs/demo-*.png) by screenshotting two
-// terminal-style cards built from REAL captured output:
+// terminal-style cards:
 //
-//   demo-endpoint.png  — initialize + tools/list against the live endpoint
-//                        https://playwright-e2e-mcp.vercel.app/api/mcp
-//                        (captured 2026-10-06 via curl, SSE replies)
+//   demo-endpoint.png  — an illustration of initialize + tools/list for a
+//                        client that sends the bearer token (all 8 tools).
+//                        The text is written here, not captured; without a
+//                        token the endpoint lists only list-tests and get-failure.
 //   demo-run-test.png  — a real `run-test` call served over stdio by
 //                        `node dist/index.js` against examples/sample-test.spec.ts
 //                        (captured 2026-10-06; Chromium, 5.1s, 4 passed)
@@ -79,17 +80,18 @@ const page = ({ badge, badgeColor, request, response }) => `<!doctype html>
 </div>`;
 
 const endpointHtml = page({
-  badge: 'LIVE ENDPOINT · Streamable HTTP',
+  badge: 'TOKEN-PROTECTED ENDPOINT · Streamable HTTP',
   badgeColor: '#3fb950',
   request: {
     url: 'https://playwright-e2e-mcp.vercel.app/api/mcp',
     body: `<span class="meth">POST</span> /api/mcp
 <span class="c">accept: application/json, text/event-stream</span>
+<span class="c">authorization: Bearer ••••••••</span>
 
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05",…}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18",…}}
 {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
   },
-  response: `{"result":{"serverInfo":{"name":"<span class="b">playwright-e2e-mcp</span>","version":"<span class="b">0.1.0</span>"},"capabilities":{"tools":{"listChanged":true}}}}
+  response: `{"result":{"serverInfo":{"name":"<span class="b">playwright-e2e-mcp</span>","version":"<span class="b">0.1.2</span>"},"capabilities":{"tools":{"listChanged":true}}}}
 
 <span class="h">8 tools:</span>
 ${TOOLS.map(([n, d]) => `<div class="tool"><span class="n">${n}</span><span class="d">${esc(d)}</span></div>`).join('\n')}`,
@@ -121,7 +123,9 @@ const shots = [
   ['demo-run-test.png', runHtml],
 ];
 
-const browser = await chromium.launch();
+const browser = await chromium.launch(
+  process.env.PW_CHROMIUM_PATH ? { executablePath: process.env.PW_CHROMIUM_PATH } : {},
+);
 try {
   for (const [name, html] of shots) {
     const file = join(root, '.demo-page.html');

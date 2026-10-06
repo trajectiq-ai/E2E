@@ -10,7 +10,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { lstat, readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { normalizePath, relativeToRoot } from './path-utils.js';
 
@@ -72,13 +72,6 @@ export interface ChangeAnalysis {
 /* Recent changes                                                      */
 /* ------------------------------------------------------------------ */
 
-function cleanPorcelainPath(raw: string): string {
-  let p = raw.trim();
-  if (p.includes(' -> ')) p = p.split(' -> ').pop() ?? p;
-  if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
-  return normalizePath(p);
-}
-
 /** Drop build/vendor paths git may report (e.g. no .gitignore yet). */
 function isIgnoredPath(file: string): boolean {
   const segments = file.split('/');
@@ -86,17 +79,35 @@ function isIgnoredPath(file: string): boolean {
   return segments.slice(0, -1).some((segment) => segment === '.git');
 }
 
+/**
+ * Git with repository-config hooks that could run commands turned off
+ * (a cloned project's .git/config is not trusted): no fsmonitor, no
+ * quoting of non-ASCII names.
+ */
+async function git(root: string, args: string[]): Promise<string[]> {
+  const { stdout } = await execFileAsync(
+    'git',
+    ['-c', 'core.fsmonitor=false', '-c', 'core.quotePath=false', ...args],
+    { cwd: root, timeout: 4_000, maxBuffer: 1024 * 1024 },
+  );
+  return stdout
+    .split('\0')
+    .filter(Boolean)
+    .map((line) => normalizePath(line));
+}
+
+/**
+ * Changed and untracked files, relative to `root` (not the repository top
+ * level) and limited to it. NUL-separated output, so names need no unquoting.
+ */
 async function gitStatusFiles(root: string): Promise<string[] | null> {
   try {
-    const { stdout } = await execFileAsync(
-      'git',
-      ['status', '--porcelain=v1', '-uall', '--untracked-files=all'],
-      { cwd: root, timeout: 4_000, maxBuffer: 1024 * 1024 },
+    const untracked = await git(root, ['ls-files', '--others', '--exclude-standard', '-z']);
+    const changed = await git(root, ['diff', '--name-only', '--relative', '-z', 'HEAD']).catch(() =>
+      // No commits yet: everything staged counts as changed.
+      git(root, ['diff', '--name-only', '--relative', '-z', '--cached']).catch(() => [] as string[]),
     );
-    return stdout
-      .split(/\r?\n/)
-      .filter((line) => line.length > 3)
-      .map((line) => cleanPorcelainPath(line.slice(3)));
+    return [...new Set([...changed, ...untracked])];
   } catch {
     return null;
   }
@@ -104,16 +115,7 @@ async function gitStatusFiles(root: string): Promise<string[] | null> {
 
 async function gitLastCommitFiles(root: string): Promise<string[] | null> {
   try {
-    const { stdout } = await execFileAsync('git', ['diff', '--name-only', 'HEAD~1'], {
-      cwd: root,
-      timeout: 4_000,
-      maxBuffer: 1024 * 1024,
-    });
-    const files = stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => normalizePath(line));
+    const files = await git(root, ['diff', '--name-only', '--relative', '-z', 'HEAD~1']);
     return files.length > 0 ? files : null;
   } catch {
     return null;
@@ -309,7 +311,8 @@ export async function analyzeRecentChanges(
     const absolute = path.isAbsolute(file) ? file : path.join(root, file);
     let source: string;
     try {
-      const info = await stat(absolute);
+      // lstat: a symlink listed by git could point outside the project.
+      const info = await lstat(absolute);
       if (!info.isFile() || info.size > MAX_FILE_BYTES) continue;
       source = await readFile(absolute, 'utf8');
     } catch {

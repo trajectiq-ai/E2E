@@ -25,7 +25,9 @@ jobs:
       contents: read
       id-token: write # GitHub OIDC for `mcp-publisher login github-oidc`
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       # Pinned release, verified against its published checksum before use.
       # To upgrade: bump the version and take the linux_amd64 line from that
@@ -40,11 +42,19 @@ jobs:
           echo "${MCP_PUBLISHER_SHA256}  mcp-publisher.tar.gz" | sha256sum -c -
           tar xzf mcp-publisher.tar.gz mcp-publisher
 
-      - name: Stamp version from the release tag (tags only)
+      # The tag, package.json and server.json must agree: registry versions
+      # are immutable, so a mismatch would publish the wrong metadata for good.
+      - name: Check versions match the release tag (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          jq --arg v "$VERSION" '.version = $v' server.json > server.tmp && mv server.tmp server.json
+          TAG=${GITHUB_REF#refs/tags/v}
+          PKG=$(jq -r '.version' package.json)
+          SRV=$(jq -r '.version' server.json)
+          SRV_PKG=$(jq -r '.packages[0].version // .version' server.json)
+          if [ "$TAG" != "$PKG" ] || [ "$TAG" != "$SRV" ] || [ "$TAG" != "$SRV_PKG" ]; then
+            echo "::error::tag v$TAG, package.json $PKG, server.json $SRV / $SRV_PKG must all match"
+            exit 1
+          fi
 
       - name: Authenticate to the MCP Registry (GitHub OIDC)
         run: ./mcp-publisher login github-oidc

@@ -27,8 +27,20 @@ export const BLOCKED_RANGES: ReadonlyArray<{ address: string; prefix: number; fa
   { address: '198.18.0.0', prefix: 15, family: 'ipv4' },
   { address: '224.0.0.0', prefix: 4, family: 'ipv4' },
   { address: '240.0.0.0', prefix: 4, family: 'ipv4' },
-  { address: '::', prefix: 128, family: 'ipv6' },
-  { address: '::1', prefix: 128, family: 'ipv6' },
+  // IPv6: unspecified, loopback and IPv4-compatible (::a.b.c.d) in one /96,
+  // then the forms that embed or translate to an IPv4 address (SIIT, NAT64,
+  // 6to4, Teredo), discard, ULA, site/link-local, multicast. IPv4-mapped
+  // (::ffff:a.b.c.d) is not listed: BlockList checks every IPv4 address
+  // against IPv6 rules in that form, so a ::ffff:0:0/96 rule would block all
+  // of IPv4. Mapped addresses are checked against the IPv4 rules instead.
+  { address: '::', prefix: 96, family: 'ipv6' },
+  { address: '::ffff:0:0:0', prefix: 96, family: 'ipv6' },
+  { address: '64:ff9b::', prefix: 96, family: 'ipv6' },
+  { address: '64:ff9b:1::', prefix: 48, family: 'ipv6' },
+  { address: '100::', prefix: 64, family: 'ipv6' },
+  { address: '2001::', prefix: 32, family: 'ipv6' },
+  { address: '2002::', prefix: 16, family: 'ipv6' },
+  { address: 'fec0::', prefix: 10, family: 'ipv6' },
   { address: 'fc00::', prefix: 7, family: 'ipv6' },
   { address: 'fe80::', prefix: 10, family: 'ipv6' },
   { address: 'ff00::', prefix: 8, family: 'ipv6' },

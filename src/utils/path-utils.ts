@@ -10,7 +10,8 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { lstat, mkdir, open, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PlaywrightMcpError } from '../types/index.js';
@@ -121,6 +122,13 @@ export function expandHome(p: string): string {
   return p;
 }
 
+/** True when any segment of `p` starts with '-' (it could be parsed as a CLI option). */
+export function hasOptionLikeSegment(p: string): boolean {
+  return normalizeSeparators(p)
+    .split('/')
+    .some((segment) => segment.startsWith('-'));
+}
+
 /**
  * Sandbox a user-supplied path to the project root.
  *
@@ -168,6 +176,12 @@ export function sanitizeUserPath(input: unknown, projectRoot: string): string {
       details: `resolved=${resolved}`,
     });
   }
+  // Checked below the root only, so a root that itself has such a segment still works.
+  if (hasOptionLikeSegment(relativeToRoot(root, resolved))) {
+    throw new PlaywrightMcpError(`Path "${raw}" has a segment starting with "-"`, 'INVALID_PATH', {
+      hint: 'Path segments may not start with "-": the path could be read as a command-line option.',
+    });
+  }
   return resolved;
 }
 
@@ -208,59 +222,99 @@ export function isTestFile(p: string): boolean {
   return TEST_FILE_RE.test(normalizeSeparators(p));
 }
 
+/** How a pass-through flag's value is checked; `null` means the flag takes no value. */
+type FlagValueCheck = null | { optional?: boolean; test: (value: string) => boolean; describe: string };
+
+const intIn = (min: number, max: number) => (value: string) =>
+  /^\d+$/.test(value) && Number(value) >= min && Number(value) <= max;
+const oneOf = (...values: string[]) => (value: string) => values.includes(value);
+/** No leading '-' (would be read as another option), no control characters. */
+const plainText = (value: string) => value !== '' && !value.startsWith('-') && !/[\x00-\x1f\x7f]/.test(value);
+
 /**
- * Playwright CLI flags callers may pass through `args`. Anything that
- * points Playwright at another file or directory (--config, --output,
- * --tsconfig, --reporter…) or blocks the run (--ui) is deliberately absent:
- * those would bypass the project-root sandbox and the checked config.
+ * Playwright CLI flags callers may pass through `args`, each with the only
+ * values it accepts. Anything that points Playwright at another file or
+ * directory (--config, --output, --tsconfig, --reporter…), blocks the run
+ * (--ui, --debug) or hands a value to another program unchecked is absent.
+ * Value-taking flags must use `--flag=value`, so a bare flag can never
+ * swallow the arguments appended after it.
  */
-const ALLOWED_CLI_FLAGS = new Set([
-  '--headed',
-  '--debug',
-  '--project',
-  '--repeat-each',
-  '--max-failures',
-  '-x',
-  '--fail-on-flaky-tests',
-  '--forbid-only',
-  '--fully-parallel',
-  '--global-timeout',
-  '--grep-invert',
-  '--pass-with-no-tests',
-  '--quiet',
-  '--shard',
-  '--trace',
-  '--update-snapshots',
-  '-u',
-  '--ignore-snapshots',
-  '--no-deps',
-  '--only-changed',
-  '--workers',
-  '-j',
-  '--retries',
-  '--timeout',
-  '--list',
+const ALLOWED_CLI_FLAGS = new Map<string, FlagValueCheck>([
+  ['--headed', null],
+  ['-x', null],
+  ['--fail-on-flaky-tests', null],
+  ['--forbid-only', null],
+  ['--fully-parallel', null],
+  ['--pass-with-no-tests', null],
+  ['--quiet', null],
+  ['--ignore-snapshots', null],
+  ['--no-deps', null],
+  ['--list', null],
+  ['--project', { test: (v) => plainText(v) && /^[\w .@:+/-]+$/.test(v), describe: 'a project name' }],
+  ['--repeat-each', { test: intIn(1, 100), describe: 'an integer 1-100' }],
+  ['--max-failures', { test: intIn(0, 1000), describe: 'an integer 0-1000' }],
+  ['--global-timeout', { test: intIn(0, 3_600_000), describe: 'milliseconds, at most 3600000' }],
+  ['--timeout', { test: intIn(0, 3_600_000), describe: 'milliseconds, at most 3600000' }],
+  ['--retries', { test: intIn(0, 10), describe: 'an integer 0-10' }],
+  ['--workers', { test: (v) => intIn(1, 64)(v) || /^([1-9]\d?|100)%$/.test(v), describe: '1-64 or a percentage' }],
+  ['-j', { test: (v) => intIn(1, 64)(v) || /^([1-9]\d?|100)%$/.test(v), describe: '1-64 or a percentage' }],
+  ['--shard', { test: (v) => /^[1-9]\d{0,3}\/[1-9]\d{0,3}$/.test(v), describe: 'current/total, e.g. 1/3' }],
+  ['--grep-invert', { test: plainText, describe: 'a pattern not starting with "-"' }],
+  [
+    '--trace',
+    {
+      test: oneOf('on', 'off', 'on-first-retry', 'on-all-retries', 'retain-on-failure', 'retain-on-first-failure', 'retain-on-failure-and-retries'),
+      describe: 'a Playwright trace mode',
+    },
+  ],
+  ['--update-snapshots', { optional: true, test: oneOf('all', 'changed', 'missing', 'none'), describe: 'all, changed, missing or none' }],
+  ['-u', { optional: true, test: oneOf('all', 'changed', 'missing', 'none'), describe: 'all, changed, missing or none' }],
+  // The value is handed to `git diff`, so it must be a plain ref, never an option.
+  [
+    '--only-changed',
+    { optional: true, test: (v) => /^[A-Za-z0-9._/~^@{}][A-Za-z0-9._/~^@{}-]*$/.test(v) && v.length <= 200, describe: 'a git ref' },
+  ],
 ]);
 
 /**
- * Validate one extra Playwright CLI argument: rejects NUL bytes and
- * shell-looking metacharacters, and only lets through flags from
- * ALLOWED_CLI_FLAGS (in `--flag` or `--flag=value` form).
+ * Validate one extra Playwright CLI argument: only flags from
+ * ALLOWED_CLI_FLAGS get through, in `--flag` or `--flag=value` form, and
+ * each value must pass that flag's check.
  */
 export function sanitizeCliArg(arg: string): string {
   const raw = typeof arg === 'string' ? arg.trim() : '';
   if (raw === '') {
     throw new PlaywrightMcpError('Argument must not be empty', 'INVALID_PATH');
   }
-  if (/[\0;&|><`$]/.test(raw)) {
-    throw new PlaywrightMcpError(`Argument "${raw}" contains forbidden shell characters`, 'INVALID_PATH', {
-      hint: 'Arguments are executed directly (no shell); remove ; & | > < ` $ characters.',
+  if (/[\0;&|><`$]/.test(raw) || /[\x00-\x1f\x7f]/.test(raw)) {
+    throw new PlaywrightMcpError(`Argument "${raw}" contains forbidden characters`, 'INVALID_PATH', {
+      hint: 'Arguments are executed directly (no shell); remove control characters and ; & | > < ` $.',
     });
   }
-  const flag = raw.split('=')[0];
+  const eq = raw.indexOf('=');
+  const flag = eq === -1 ? raw : raw.slice(0, eq);
+  const value = eq === -1 ? undefined : raw.slice(eq + 1);
   if (!ALLOWED_CLI_FLAGS.has(flag)) {
     throw new PlaywrightMcpError(`Argument "${raw}" is not an allowed Playwright flag`, 'INVALID_PATH', {
-      hint: `Allowed flags: ${[...ALLOWED_CLI_FLAGS].join(', ')}. Pass test files via testFiles and the config via config.`,
+      hint: `Allowed flags: ${[...ALLOWED_CLI_FLAGS.keys()].join(', ')}. Pass test files via testFiles and the config via config.`,
+    });
+  }
+  const check = ALLOWED_CLI_FLAGS.get(flag) ?? null;
+  if (check === null) {
+    if (value !== undefined) {
+      throw new PlaywrightMcpError(`Flag "${flag}" does not take a value`, 'INVALID_PATH');
+    }
+    return raw;
+  }
+  if (value === undefined) {
+    if (check.optional) return raw;
+    throw new PlaywrightMcpError(`Flag "${flag}" needs a value: use ${flag}=<value>`, 'INVALID_PATH', {
+      hint: `${flag} takes ${check.describe}.`,
+    });
+  }
+  if (!check.test(value)) {
+    throw new PlaywrightMcpError(`Invalid value for ${flag}: "${value}"`, 'INVALID_PATH', {
+      hint: `${flag} takes ${check.describe}.`,
     });
   }
   return raw;
@@ -285,6 +339,32 @@ export async function realPathLenient(p: string): Promise<string> {
       tail.push(path.posix.basename(current));
       current = parent;
     }
+  }
+}
+
+/**
+ * Write `data` to `target` inside `root` without following a symlink at
+ * the final path component (a planted link, even a dangling one, could
+ * otherwise redirect the write outside the root). Parent directories are
+ * created and re-checked against the root after creation.
+ */
+export async function writeFileInsideRoot(target: string, data: string | Uint8Array, root: string): Promise<void> {
+  const native = toNativePath(target);
+  const info = await lstat(native).catch(() => null);
+  if (info?.isSymbolicLink()) {
+    throw new PlaywrightMcpError(`Refusing to write through a symlink: ${normalizePath(target)}`, 'INVALID_PATH', {
+      hint: 'Replace the symlink with a regular file or pick another path.',
+    });
+  }
+  await mkdir(path.dirname(native), { recursive: true });
+  await assertRealPathInside(path.posix.dirname(normalizePath(target)), root);
+  // O_NOFOLLOW closes the gap between the lstat above and the open (POSIX only).
+  const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | (fsConstants.O_NOFOLLOW ?? 0);
+  const handle = await open(native, flags, 0o644);
+  try {
+    await handle.writeFile(data);
+  } finally {
+    await handle.close();
   }
 }
 

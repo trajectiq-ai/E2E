@@ -137,8 +137,15 @@ export function readZipEntries(buf: Buffer): Map<string, Buffer> {
     offset += 46 + nameLength + extraLength + commentLength;
   }
 
+  // One budget for the whole archive: a per-entry cap alone lets many
+  // entries (or several pointing at the same data) add up to gigabytes.
+  let budget = MAX_INFLATED_BYTES;
+  const seenOffsets = new Set<number>();
   for (const [name, entry] of central) {
     const lh = entry.localHeaderOffset;
+    if (seenOffsets.has(lh)) continue;
+    seenOffsets.add(lh);
+    if (budget <= 0) break;
     if (lh + 30 > buf.length || buf.readUInt32LE(lh) !== 0x04034b50) continue;
     const nameLength = buf.readUInt16LE(lh + 26);
     const extraLength = buf.readUInt16LE(lh + 28);
@@ -147,8 +154,13 @@ export function readZipEntries(buf: Buffer): Map<string, Buffer> {
     if (end > buf.length) continue;
     const raw = buf.subarray(start, end);
     try {
-      if (entry.compressionMethod === 0) out.set(name, Buffer.from(raw));
-      else if (entry.compressionMethod === 8) out.set(name, inflateRawSync(raw, INFLATE_LIMIT));
+      let data: Buffer | undefined;
+      if (entry.compressionMethod === 0) data = raw.length <= budget ? Buffer.from(raw) : undefined;
+      else if (entry.compressionMethod === 8) data = inflateRawSync(raw, { maxOutputLength: budget });
+      if (data) {
+        budget -= data.length;
+        out.set(name, data);
+      }
     } catch {
       // Skip unreadable entry; callers surface missing snapshots as warnings.
     }

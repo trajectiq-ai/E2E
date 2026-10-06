@@ -71,7 +71,7 @@ const runTestInput = z.object({
   args: z
     .array(z.string())
     .optional()
-    .describe('Extra Playwright CLI arguments (shell metacharacters are rejected)'),
+    .describe('Extra Playwright flags from an allowlist, as --flag or --flag=value (e.g. --repeat-each=3, --shard=1/2, --trace=on)'),
 });
 
 export type RunTestInput = z.infer<typeof runTestInput>;

@@ -155,11 +155,17 @@ export interface CreateServerOptions {
   store?: ToolStore;
   /** Register only these tools (default: all). Used by the hosted HTTP bridge. */
   tools?: readonly string[];
+  /** Unauthenticated HTTP mode: see ToolContext.restricted. */
+  restricted?: boolean;
+  /** Aborted when the HTTP client goes away; combined with the MCP request signal. */
+  requestSignal?: AbortSignal;
 }
 
 /**
- * Tools that neither spawn processes, drive a browser nor write files.
- * The HTTP bridge serves only these unless it is protected by a token.
+ * Tools that neither drive a browser nor write files. The HTTP bridge
+ * serves only these unless it is protected by a token, and runs them in
+ * restricted mode, where list-tests scans sources instead of spawning
+ * Playwright (which would execute the project's config and spec files).
  */
 export const READ_ONLY_TOOLS: readonly string[] = ['list-tests', 'get-failure'];
 
@@ -204,9 +210,12 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         const ctx: ToolContext = {
           logger: logger.child({ tool: tool.name }),
           // v2: the request abort signal lives under ctx.mcpReq.
-          signal: reqCtx.mcpReq.signal,
+          signal: options.requestSignal
+            ? AbortSignal.any([reqCtx.mcpReq.signal, options.requestSignal])
+            : reqCtx.mcpReq.signal,
           store,
           projectRoot,
+          restricted: options.restricted === true,
         };
         try {
           return await tool.handler(args as never, ctx);

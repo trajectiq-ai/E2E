@@ -112,13 +112,25 @@ export async function resolveProjectRoot(
 ): Promise<string> {
   const base = normalizePath(ctx.projectRoot);
   if (input === undefined || input.trim() === '') return base;
+  if (ctx.restricted) {
+    throw new PlaywrightMcpError('projectRoot cannot be changed on this server', 'INVALID_PATH', {
+      hint: 'Omit projectRoot; this endpoint only serves its configured project.',
+    });
+  }
   const resolved = normalizePath(resolvePath(base, input.trim()));
+  const allowed = allowedProjectRoots(base);
+  // Check the allowlist before existence, so the error does not reveal
+  // which directories exist outside the allowed roots.
+  if (!allowed.some((root) => isPathInside(resolved, root))) {
+    throw new PlaywrightMcpError(`Project root ${resolved} is outside the allowed roots`, 'INVALID_PATH', {
+      hint: 'projectRoot must be inside the server\'s project root or a PW_MCP_ALLOWED_ROOTS entry.',
+    });
+  }
   if (!(await isDirectory(resolved))) {
     throw new PlaywrightMcpError(`Project root not found: ${resolved}`, 'INVALID_PATH', {
       hint: 'Pass `projectRoot` as an existing directory (absolute, or relative to the server working directory).',
     });
   }
-  const allowed = allowedProjectRoots(base);
   for (const root of allowed) {
     if (!isPathInside(resolved, root)) continue;
     try {
@@ -129,7 +141,7 @@ export async function resolveProjectRoot(
     }
   }
   throw new PlaywrightMcpError(`Project root ${resolved} is outside the allowed roots`, 'INVALID_PATH', {
-    hint: `projectRoot must be inside ${allowed.join(' or ')}. Start the server with PW_MCP_PROJECT_ROOT, or add the directory to PW_MCP_ALLOWED_ROOTS.`,
+    hint: 'projectRoot resolves (through a symlink) outside the server\'s project root and PW_MCP_ALLOWED_ROOTS.',
   });
 }
 
@@ -419,7 +431,9 @@ async function startGuardProxy(ranges) {
       // the host itself and refuses blocked ranges before connecting.
       const proxyPort = await startGuardProxy(cfg.blockedRanges || []);
       launchOptions.proxy = { server: 'http://127.0.0.1:' + proxyPort };
-      launchOptions.args = ['--proxy-bypass-list=<-loopback>'];
+      // WebRTC STUN/TURN over UDP does not go through the proxy; keep it off
+      // so a page cannot send UDP to (or scan) the private network.
+      launchOptions.args = ['--proxy-bypass-list=<-loopback>', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'];
     }
     browser = await pw.chromium.launch(launchOptions);
     const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });

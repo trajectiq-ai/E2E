@@ -128,6 +128,11 @@ export interface ToolContext {
   store: ToolStore;
   /** Default project root (server cwd or PW_MCP_PROJECT_ROOT). */
   projectRoot: string;
+  /**
+   * Set for unauthenticated HTTP callers: tools must not spawn processes
+   * or run project code, and callers may not pick another project root.
+   */
+  restricted?: boolean;
 }
 
 /**
@@ -353,6 +358,8 @@ export interface ListTestsOptions {
   filter?: string;
   limit?: number;
   signal?: AbortSignal;
+  /** Skip `playwright test --list` (which runs project code) and scan sources only. */
+  noSpawn?: boolean;
 }
 
 export interface DiscoveredTest {

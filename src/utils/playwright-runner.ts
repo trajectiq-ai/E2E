@@ -35,6 +35,7 @@ import {
   parseProjectNames,
 } from './report-parser.js';
 import {
+  hasOptionLikeSegment,
   isAbsolutePath,
   isPathInside,
   normalizePath,
@@ -367,11 +368,15 @@ function passthroughNames(): Set<string> {
   );
 }
 
-function keepInScrubbedEnv(key: string, passthrough: Set<string>): boolean {
+/** A URL with userinfo (`scheme://user:pass@host`), e.g. an authenticated proxy. */
+const URL_CREDENTIALS_RE = /:\/\/[^/\s@]*@/;
+
+function keepInScrubbedEnv(key: string, value: string | undefined, passthrough: Set<string>): boolean {
   const upper = key.toUpperCase();
   if (upper === 'PW_MCP_HTTP_TOKEN') return false;
   if (passthrough.has(upper)) return true;
   if (SECRET_ENV_RE.test(key)) return false;
+  if (value !== undefined && URL_CREDENTIALS_RE.test(value)) return false;
   return CHILD_ENV_ALLOW.has(upper) || CHILD_ENV_ALLOW_PREFIXES.some((prefix) => upper.startsWith(prefix));
 }
 
@@ -380,7 +385,7 @@ export function childEnv(overrides: Record<string, string> = {}): NodeJS.Process
   const env: NodeJS.ProcessEnv = {};
   const passthrough = scrubChildEnv ? passthroughNames() : new Set<string>();
   for (const [key, value] of Object.entries(process.env)) {
-    if (scrubChildEnv && !keepInScrubbedEnv(key, passthrough)) continue;
+    if (scrubChildEnv && !keepInScrubbedEnv(key, value, passthrough)) continue;
     env[key] = value;
   }
   return { ...env, ...overrides };
@@ -407,6 +412,13 @@ function sanitizeTestFile(file: string, root: string): string {
   if (!isPathInside(resolved, root)) {
     throw new PlaywrightMcpError(`Test path "${file}" is outside the project root`, 'INVALID_PATH', {
       hint: `Only test paths inside ${root} are allowed.`,
+    });
+  }
+  // Test files go on the command line as positionals; a segment like
+  // "--output=/x" would be parsed by Playwright as an option.
+  if (hasOptionLikeSegment(relativeToRoot(root, resolved))) {
+    throw new PlaywrightMcpError(`Test path "${file}" has a segment starting with "-"`, 'INVALID_PATH', {
+      hint: 'Rename the file or folder so no path segment starts with "-".',
     });
   }
   return resolved;
@@ -592,7 +604,9 @@ export async function runTests(options: RunTestOptions): Promise<RunTestResult> 
     hint =
       outcome.spawnError.code === 'ENOENT'
         ? 'Node.js could not be located on PATH. Reinstall Node >= 18 and retry.'
-        : `Failed to start Playwright: ${outcome.spawnError.message}`;
+        : outcome.spawnError.code === 'EBUSY'
+          ? 'The server is at its limit of concurrent runs; retry when one finishes.'
+          : `Failed to start Playwright: ${outcome.spawnError.message}`;
   } else if (outcome.aborted) {
     errorKind = 'CLIENT_DISCONNECT';
     errorMessage = 'Run aborted because the MCP client disconnected.';
@@ -671,6 +685,15 @@ async function runPlaywrightList(
     signal: options.signal,
   });
 
+  if (outcome.spawnError) {
+    throw new PlaywrightMcpError(outcome.spawnError.message, 'SPAWN_FAILED', {
+      hint:
+        outcome.spawnError.code === 'EBUSY'
+          ? 'The server is at its limit of concurrent runs; retry when one finishes.'
+          : 'Could not start Playwright.',
+    });
+  }
+
   const raw =
     (await readFileText(listReportPath)) ?? extractJsonFromText(outcome.stdout) ?? undefined;
 
@@ -713,8 +736,10 @@ export async function listTests(options: ListTestsOptions): Promise<ListTestsRes
     }
   }
 
-  const cli = await resolvePlaywrightCli(root);
-  if (cli === null) {
+  const cli = options.noSpawn ? null : await resolvePlaywrightCli(root);
+  if (options.noSpawn) {
+    // Source scan only (restricted callers); not an error.
+  } else if (cli === null) {
     const detection = await detectProject(root);
     const { message, hint } = missingPlaywrightMessage(detection);
     error = { kind: 'NO_PLAYWRIGHT', message, hint };

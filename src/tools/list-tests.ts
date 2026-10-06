@@ -88,7 +88,10 @@ export const listTestsTool = {
     guard('list-tests', async () => {
       const root = await resolveProjectRoot(args.projectRoot, ctx);
       const detection = await detectProject(root);
-      const configPath = resolveConfigSelection(detection, args.config);
+      let configPath = ctx.restricted ? undefined : resolveConfigSelection(detection, args.config);
+      // Project detection may find a config in a parent directory; never
+      // execute one from outside the project root.
+      if (configPath !== undefined && !isPathInside(configPath, root)) configPath = undefined;
 
       let testDir: string | null = detection.testDir;
       if (args.testDir !== undefined) {
@@ -105,6 +108,9 @@ export const listTestsTool = {
         filter: args.filter,
         limit: args.limit,
         signal: ctx.signal,
+        // Restricted callers get the source scan only: `playwright test
+        // --list` executes the project's config and spec files.
+        noSpawn: ctx.restricted === true,
       });
 
       ctx.logger.info('list-tests finished', {

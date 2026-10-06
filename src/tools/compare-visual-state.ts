@@ -8,13 +8,12 @@
  */
 
 import { z } from 'zod';
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { readFile, rm, stat } from 'node:fs/promises';
 import { PlaywrightMcpError } from '../types/index.js';
 import type { ToolContext, ToolResponse } from '../types/index.js';
 import type { RgbaImage, Rgb } from '../utils/image-diff.js';
 import { decodePng, diffImages, encodePng } from '../utils/image-diff.js';
-import { assertRealPathInside, relativeToRoot, resolvePath, tempFilePath } from '../utils/path-utils.js';
+import { assertRealPathInside, relativeToRoot, resolvePath, tempFilePath, writeFileInsideRoot } from '../utils/path-utils.js';
 import { diagnoseOutput } from '../utils/report-parser.js';
 import {
   assertHttpUrl,
@@ -187,10 +186,10 @@ export const compareVisualStateTool = {
         const hasBaseline = await exists(baselinePath);
         if (args.action === 'baseline' || !hasBaseline) {
           try {
-            await mkdir(dirname(baselinePath), { recursive: true });
-            await writeFile(baselinePath, shot);
-            await writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf8');
+            await writeFileInsideRoot(baselinePath, shot, root);
+            await writeFileInsideRoot(metaPath, JSON.stringify(meta, null, 2), root);
           } catch (err) {
+            if (err instanceof PlaywrightMcpError) throw err;
             const code = (err as NodeJS.ErrnoException).code;
             const kind = code === 'ENOSPC' ? 'DISK_FULL' : 'UNKNOWN';
             const diagnosis = diagnoseOutput(`${code ?? ''} ${err instanceof Error ? err.message : ''}`);
@@ -246,8 +245,7 @@ export const compareVisualStateTool = {
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
         const diffPath = resolvePath(visualDir, `diffs/${args.name}-${stamp}.png`);
         try {
-          await mkdir(dirname(diffPath), { recursive: true });
-          await writeFile(diffPath, encodePng(result.diffImage));
+          await writeFileInsideRoot(diffPath, encodePng(result.diffImage), root);
         } catch {
           // Diff image is a nice-to-have; the numbers below still stand.
         }

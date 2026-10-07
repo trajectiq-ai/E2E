@@ -411,10 +411,17 @@ every push, so there is no token to manage and no CLI step — watch the
 | `PW_MCP_PASSTHROUGH_ENV` | — | HTTP bridge only: comma-separated extra variables passed to test runs (e.g. `BASE_URL`) |
 | `PW_MCP_MAX_CHILDREN` | `4` | HTTP bridge only: how many test runs and browser probes may run at once |
 | `PW_MCP_BLOCK_PRIVATE_URLS` | off (on for the HTTP bridge) | `1` makes the URL tools refuse loopback, private-network and cloud-metadata addresses, including redirects and subresources |
-| `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` \| `silent` |
-| `LOG_FORMAT` | `text` | `text` or `json` (structured) |
+| `LOG_LEVEL` / `MCP_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` \| `silent`; `LOG_LEVEL` wins when both are set |
+| `LOG_FORMAT` / `MCP_LOG_FORMAT` | `text` | `text`, or `json` (also `ndjson`) for one structured JSON object per line — ready for a log ingester |
 
-Logs always go to **stderr** — stdout is reserved for the MCP protocol.
+Logs always go to **stderr** — stdout is reserved for the MCP protocol. Unrecognized values
+fall back to the default, so a typo in `LOG_LEVEL` logs at `info` and one in `LOG_FORMAT`
+logs as text rather than silencing the server. With `LOG_FORMAT=json` each line is a single
+object (`time`, `level`, `message` plus context):
+
+```json
+{"time":"2026-10-07T08:00:00.000Z","level":"info","message":"server ready","name":"playwright-e2e-mcp"}
+```
 
 ## Typical workflow
 

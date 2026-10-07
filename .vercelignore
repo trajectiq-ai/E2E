@@ -8,6 +8,7 @@ node_modules/
 test/
 e2e/
 scripts/
+docs/
 coverage/
 dist-mcpb/
 *.mcpb

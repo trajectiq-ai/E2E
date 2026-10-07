@@ -20,7 +20,7 @@ jobs:
   publish:
     name: Publish server.json to registry.modelcontextprotocol.io
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write # GitHub OIDC for `mcp-publisher login github-oidc`
@@ -56,6 +56,25 @@ jobs:
             exit 1
           fi
 
+      # A tag push runs this workflow and the npm publish side by side, and the
+      # registry refuses an npm package whose version it cannot see. The tarball
+      # can take minutes to reach npm's CDN, so wait for it here instead of
+      # failing the release and needing a human to re-run the workflow.
+      - name: Wait for npm to serve this version
+        run: |
+          VERSION=$(jq -r '.version' server.json)
+          PACKAGE=$(jq -r '.packages[0].identifier' server.json)
+          for attempt in $(seq 1 15); do
+            if curl -sSf --max-time 30 "https://registry.npmjs.org/${PACKAGE}" \
+                | jq -e --arg v "$VERSION" '.versions[$v]' >/dev/null 2>&1; then
+              echo "npm serves ${PACKAGE}@${VERSION}."
+              exit 0
+            fi
+            echo "npm does not serve ${PACKAGE}@${VERSION} yet (attempt ${attempt}/15) — waiting 20s."
+            sleep 20
+          done
+          echo "::warning::npm still does not serve ${PACKAGE}@${VERSION}; attempting the registry publish anyway."
+
       - name: Authenticate to the MCP Registry (GitHub OIDC)
         run: ./mcp-publisher login github-oidc
 
@@ -63,22 +82,24 @@ jobs:
         run: |
           NAME=$(jq -r '.name' server.json)
           VERSION=$(jq -r '.version' server.json)
-          # Unique search token = the namespace owner ("trajectiq-ai").
-          SEARCH=$(printf '%s' "$NAME" | sed -e 's|^io\.github\.||' -e 's|/.*$||')
-
-          # Skip when this exact name@version is already listed. Fail open:
-          # if the registry API is unreachable, attempt the publish anyway.
-          # The registry is slow enough that a single 20s call flakes, so retry.
-          EXISTING=$(curl -sS --max-time 30 --retry 3 --retry-delay 2 --retry-all-errors \
-              "https://registry.modelcontextprotocol.io/v0/servers?search=$SEARCH" 2>/dev/null \
-            | jq -r --arg n "$NAME" --arg v "$VERSION" \
-                '[.servers[]? | select(.server.name == $n and .server.version == $v)] | length' 2>/dev/null || true)
-          if [ -n "$EXISTING" ] && [ "$EXISTING" != "0" ]; then
+          # Ask the authoritative version endpoint whether this name@version is
+          # already published. The search index is not a safe oracle here: it
+          # once reported a version as present while /versions/<v> still
+          # answered 404, and since this check can only skip the publish, that
+          # wrong answer shipped nothing while the run went green. Fail open on
+          # anything that is not a definitive 200. The registry is slow enough
+          # that a single call flakes, so retry.
+          ENCODED=$(printf '%s' "$NAME" | sed 's|/|%2F|')
+          EXISTING=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 \
+              --retry 3 --retry-delay 2 --retry-all-errors \
+              "https://registry.modelcontextprotocol.io/v0/servers/${ENCODED}/versions/${VERSION}" \
+            2>/dev/null || true)
+          if [ "$EXISTING" = "200" ]; then
             echo "Already published: $NAME@$VERSION — skipping."
             exit 0
           fi
-          if [ -z "$EXISTING" ]; then
-            echo "Registry lookup unavailable — attempting publish anyway."
+          if [ "$EXISTING" != "404" ]; then
+            echo "Registry version lookup answered '${EXISTING:-nothing}' — attempting publish anyway."
           fi
 
           set +e
@@ -103,7 +124,14 @@ jobs:
             exit "$STATUS"
           fi
 
-      - name: Show published entry
+      # Reads the version that was just published, and fails if it is not there:
+      # this step is the receipt for the publish above, so it must not print a
+      # table for some other version and let a green run stand in for a release.
+      - name: Show the published version
         run: |
-          curl -sSL --max-time 30 "https://registry.modelcontextprotocol.io/v0/servers?search=trajectiq" \
-            | jq '.servers[] | select(.server.name == "io.github.trajectiq-ai/E2E") | .server | {name, title, version, websiteUrl, status: ._meta["io.modelcontextprotocol.registry/official"].status}'
+          NAME=$(jq -r '.name' server.json)
+          VERSION=$(jq -r '.version' server.json)
+          ENCODED=$(printf '%s' "$NAME" | sed 's|/|%2F|')
+          curl -sSLf --max-time 30 --retry 4 --retry-delay 5 --retry-all-errors \
+              "https://registry.modelcontextprotocol.io/v0/servers/${ENCODED}/versions/${VERSION}" \
+            | jq '{name: .server.name, title: .server.title, version: .server.version, websiteUrl: .server.websiteUrl, status: ._meta["io.modelcontextprotocol.registry/official"].status, isLatest: ._meta["io.modelcontextprotocol.registry/official"].isLatest}'

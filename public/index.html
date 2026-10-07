@@ -35,18 +35,22 @@
         <li><code>generate-e2e-test</code>, <code>compare-visual-state</code>, <code>diagnose-flaky</code></li>
       </ul>
 
-      <p>Verify it with a handshake:</p>
+      <p>Verify it with a handshake (this endpoint needs its bearer token):</p>
       <pre>curl -X POST https://playwright-e2e-mcp.vercel.app/api/mcp \
   -H 'content-type: application/json' \
   -H 'accept: application/json, text/event-stream' \
+  -H 'authorization: Bearer &lt;token&gt;' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}'</pre>
 
       <p>
         This hosted endpoint is for clients that only accept remote connectors (ChatGPT custom
-        connectors, remote MCP clients). Without a token it serves only the read-only tools
-        (<code>list-tests</code>, <code>get-failure</code>); with <code>Authorization: Bearer &lt;token&gt;</code>
-        it serves all eight. Tools that need a browser or a local project run against the files in
-        this deployment and will say so when they cannot.
+        connectors, remote MCP clients). <strong>It requires a bearer token</strong>: a request
+        without <code>Authorization: Bearer &lt;token&gt;</code> is answered
+        <code>401 {"error":"unauthorized"}</code>, and with it all eight tools are served. (A
+        self-hosted bridge started without <code>PW_MCP_HTTP_TOKEN</code> instead serves just the
+        read-only tools, <code>list-tests</code> and <code>get-failure</code>.) Tools that need a
+        browser or a local project run against the files in this deployment and will say so when
+        they cannot.
       </p>
     </main>
   </body>

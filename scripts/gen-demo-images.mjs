@@ -92,7 +92,7 @@ const endpointHtml = page({
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18",…}}
 {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
   },
-  response: `{"result":{"serverInfo":{"name":"<span class="b">playwright-e2e-mcp</span>","version":"<span class="b">0.1.2</span>"},"capabilities":{"tools":{"listChanged":true}}}}
+  response: `{"result":{"serverInfo":{"name":"<span class="b">playwright-e2e-mcp</span>","version":"<span class="b">0.1.3</span>"},"capabilities":{"tools":{"listChanged":true}}}}
 
 <span class="h">8 tools:</span>
 ${TOOLS.map(([n, d]) => `<div class="tool"><span class="n">${n}</span><span class="d">${esc(d)}</span></div>`).join('\n')}`,

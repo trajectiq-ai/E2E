@@ -11,6 +11,9 @@ bundle.zip
 *.mcpb
 *.mcpb.sha256
 
+# npm pack output (uploaded as a release asset, never tracked)
+*.tgz
+
 # Playwright artifacts
 test-results/
 playwright-report/

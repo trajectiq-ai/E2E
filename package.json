@@ -2,6 +2,7 @@
   "name": "playwright-e2e-mcp",
   "version": "0.1.2",
   "description": "MCP server that runs, debugs, and inspects Playwright end-to-end tests from any MCP client",
+  "author": "trajectiq-ai <trajectiq@gmail.com>",
   "mcpName": "io.github.trajectiq-ai/E2E",
   "type": "module",
   "license": "MIT",
@@ -49,6 +50,7 @@
     "test": "npm run build && node test/run-tests.mjs",
     "e2e": "npm run build && node e2e/run.mjs",
     "mcpb": "npm run build && node scripts/build-mcpb.mjs",
+    "mcpb:smoke": "npm run mcpb && node scripts/mcpb-launch-sim.mjs",
     "prepublishOnly": "npm test"
   },
   "engines": {

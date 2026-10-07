@@ -58,7 +58,7 @@
   },
   "dependencies": {
     "zod": "^4.2.0",
-    "@modelcontextprotocol/server": "^2.3.0"
+    "@modelcontextprotocol/server": "^2.3.1"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

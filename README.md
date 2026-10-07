@@ -349,7 +349,7 @@ Streamable HTTP bridge for exactly that case:
 | --- | --- |
 | **Endpoint** | `https://playwright-e2e-mcp.vercel.app/api/mcp` |
 | **Transport** | MCP Streamable HTTP (`POST` JSON in, JSON or SSE out) |
-| **Auth** | optional bearer token (`PW_MCP_HTTP_TOKEN`); without one only read-only tools are served |
+| **Auth** | bearer token (`PW_MCP_HTTP_TOKEN`). The deployment at this URL requires it; a bridge started without the variable serves only the read-only tools |
 | **Source** | [`api/mcp.ts`](api/mcp.ts) → [`src/http.ts`](src/http.ts) |
 
 The bridge runs the *same* `createServer()` as the stdio transport; the SDK
@@ -357,28 +357,43 @@ serves every request with a fresh server instance, which is what a serverless
 function wants. `test/http-bridge.test.mjs` drives the real Node adapter over
 `node:http` so a broken bridge fails in CI, not in ChatGPT.
 
-**Open vs. token-protected.** When the deployment has no `PW_MCP_HTTP_TOKEN`,
-anyone can reach the URL, so the bridge serves only `list-tests` and
-`get-failure`, in restricted mode: `list-tests` scans sources instead of running
-`playwright test --list` (which would execute the project's config), callers
-cannot pick another `projectRoot`, and nothing spawns a process, drives a browser
-or writes a file. Set `PW_MCP_HTTP_TOKEN` (at least 16 characters; use a random
-value) to serve all eight tools to clients that send `Authorization: Bearer <token>`;
-other requests get `401`. Child processes started over HTTP get only an allowlisted
-environment. `PW_MCP_ALLOWED_HOSTS` (comma separated, `*` for any) limits the
-accepted `Host` header; without a token and without that variable, only
-`localhost` names and the deployment's own Vercel hostnames are accepted
+**This deployment is token-protected.** `https://playwright-e2e-mcp.vercel.app`
+has `PW_MCP_HTTP_TOKEN` set, so a request without `Authorization: Bearer <token>`
+— including a ChatGPT connector created with authentication *None* — gets
+`401 {"error":"unauthorized"}`. Ask the operator for the token, or run your own
+bridge (below).
+
+**Open vs. token-protected.** With `PW_MCP_HTTP_TOKEN` set (at least 16
+characters; use a random value) all eight tools are served to clients that send
+`Authorization: Bearer <token>`, and every other request gets `401`. Without that
+variable anyone who reaches the URL can call the bridge, so it degrades to
+`list-tests` and `get-failure` in restricted mode: `list-tests` scans sources
+instead of running `playwright test --list` (which would execute the project's
+config), callers cannot pick another `projectRoot`, and nothing spawns a process,
+drives a browser or writes a file. Child processes started over HTTP get only an
+allowlisted environment. `PW_MCP_ALLOWED_HOSTS` (comma separated, `*` for any)
+limits the accepted `Host` header; without a token and without that variable,
+only `localhost` names and the deployment's own Vercel hostnames are accepted
 (DNS-rebinding protection).
 
 **Add it to ChatGPT:** Settings → Connectors → turn on **Advanced → Developer
-mode** → *Create custom connector* → paste the endpoint above → authentication
-**None** (read-only tools).
+mode** → *Create custom connector* → paste the endpoint above. Authentication
+**None** only works against a bridge with no token (read-only tools), so for this
+deployment choose the connector's **API key** authentication and send
+`Authorization: Bearer <token>` — or point the connector at your own deployment
+with `PW_MCP_HTTP_TOKEN` unset.
+
+To self-host the open, read-only variant, deploy this repo with
+`PW_MCP_HTTP_TOKEN` unset; nothing else changes.
 
 Codex can also take the remote transport instead of spawning `npx`, if you'd
-rather not ship Playwright to every machine:
+rather not ship Playwright to every machine. Point it at the token through an
+environment variable so the secret stays out of the config file:
 
 ```bash
-codex mcp add playwright-e2e-remote --url https://playwright-e2e-mcp.vercel.app/api/mcp
+export PW_MCP_HTTP_TOKEN=…   # ask the operator for the value
+codex mcp add playwright-e2e-remote --url https://playwright-e2e-mcp.vercel.app/api/mcp \
+  --bearer-token-env-var PW_MCP_HTTP_TOKEN
 ```
 
 **What to expect:** `list-tests` works and reports the specs bundled with the
@@ -389,10 +404,12 @@ hint. Use the stdio install for real runs; the hosted endpoint is for discovery
 and for clients that cannot run local processes.
 
 ```bash
-# verify the handshake without any client
+# verify the handshake without any client (the live deployment needs the token;
+# drop the authorization header and it answers 401 instead)
 curl -X POST https://playwright-e2e-mcp.vercel.app/api/mcp \
   -H 'content-type: application/json' \
   -H 'accept: application/json, text/event-stream' \
+  -H "authorization: Bearer $PW_MCP_HTTP_TOKEN" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}'
 ```
 
@@ -516,6 +533,8 @@ npm install
 npm run build   # tsc → dist/ (zero errors)
 npm test        # build + test/run-tests.mjs (unit tests, any Node ≥20)
 npm run e2e     # build + e2e/run.mjs: live MCP ↔ Playwright integration suite
+npm run mcpb    # build + bundle dist/ into playwright-e2e-mcp-<version>.mcpb (+ .sha256)
+npm run mcpb:smoke   # ...then install that bundle in a temp dir, launch it and assert the handshake
 ```
 
 Tests cover the report parser (sample Playwright JSON, trace attachments), path utils
@@ -528,8 +547,8 @@ helpers, the **trace reader** (synthetic trace.zip: error, failed action, DOM sn
 (failure signatures, CONSISTENTLY FAILING / FLAKY / NOT REPRODUCING / NO TESTS RAN),
 the **HTTP bridge** (token, restricted mode, Host allowlist), the **security
 regressions** (sandbox escapes, argument smuggling, symlink writes, code injection,
-SSRF ranges, env scrubbing, decode limits), the `.mcpb` manifest and the MCP config
-files.
+SSRF ranges, env scrubbing, decode limits), the `.mcpb` manifest, the `.mcpb` zip
+extractor, and the MCP config files.
 
 ### Integration suite (`npm run e2e`)
 

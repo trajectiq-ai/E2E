@@ -3,7 +3,7 @@
   "name": "io.github.trajectiq-ai/E2E",
   "title": "Playwright E2E MCP",
   "description": "Run, debug and inspect Playwright E2E tests from any AI agent: diagnostics, live DOM, selectors.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "websiteUrl": "https://github.com/trajectiq-ai/E2E#readme",
   "repository": {
     "source": "github",
@@ -14,7 +14,7 @@
     {
       "registryType": "npm",
       "identifier": "playwright-e2e-mcp",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "transport": {
         "type": "stdio"
       }

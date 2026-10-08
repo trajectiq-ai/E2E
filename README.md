@@ -1,6 +1,7 @@
 # playwright-e2e-mcp
 
 [![CI](https://github.com/trajectiq-ai/E2E/actions/workflows/ci.yml/badge.svg)](https://github.com/trajectiq-ai/E2E/actions/workflows/ci.yml) [![release](https://img.shields.io/github/v/release/trajectiq-ai/E2E)](https://github.com/trajectiq-ai/E2E/releases) [![MCP Registry](https://img.shields.io/badge/MCP%20Registry-io.github.trajectiq--ai%2FE2E-2563eb)](https://registry.modelcontextprotocol.io/)
+[![M8ven Score](https://m8ven.ai/badge/mcp/trajectiq-ai/e2e)](https://m8ven.ai/mcp/trajectiq-ai/e2e?s=readme)
 
 An [MCP](https://modelcontextprotocol.io) server that lets AI agents **run, debug, and inspect Playwright end-to-end tests** — with structured results, actionable failure diagnostics, and live DOM inspection.
 

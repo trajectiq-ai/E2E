@@ -588,3 +588,4 @@ pipeline in one shot.
 ## License
 
 MIT
+[![M8ven Score](https://m8ven.ai/badge/mcp/trajectiq-ai-e2e-fzfqvz?v=1bc57c32547f4c84e29d89f2b9a1f82c)](https://m8ven.ai/mcp/trajectiq-ai-e2e-fzfqvz?s=readme)

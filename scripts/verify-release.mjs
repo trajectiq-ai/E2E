@@ -9,7 +9,7 @@
  * Run it from a checkout of the tag, with the bundle already built:
  *
  *   npm ci && npm run mcpb
- *   node scripts/verify-release.mjs v0.2.1 [--dir <downloaded-assets>]
+ *   node scripts/verify-release.mjs v0.2.2 [--dir <downloaded-assets>]
  *
  * It checks that
  *   - the tag matches the version in package.json,
@@ -195,7 +195,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const options = parseArgs(process.argv.slice(2));
     const tag = options.positional[0];
     if (!tag) {
-      console.error('verify-release: pass a release tag, e.g. `node scripts/verify-release.mjs v0.2.1`');
+      console.error('verify-release: pass a release tag, e.g. `node scripts/verify-release.mjs v0.2.2`');
       process.exit(1);
     }
 

@@ -67,7 +67,7 @@ and every other MCP client — pick whichever route fits:
 | --- | --- |
 | **npm (canonical, fastest)** | `npx -y playwright-e2e-mcp` |
 | **MCP Registry** (registry-aware clients discover it automatically) | `io.github.trajectiq-ai/E2E` — [listing](https://registry.modelcontextprotocol.io/) |
-| **Any client, no npm account needed** | `npx -y github:trajectiq-ai/E2E#v0.2.0` (pin a release tag) |
+| **Any client, no npm account needed** | `npx -y github:trajectiq-ai/E2E#v0.2.1` (pin a release tag) |
 | **Claude Desktop, zero Node setup** | double-click the [`.mcpb` extension](https://github.com/trajectiq-ai/E2E/releases) |
 | **Remote-only clients (ChatGPT connectors)** | `https://playwright-e2e-mcp.vercel.app/api/mcp` |
 
@@ -370,8 +370,8 @@ builds `dist/` automatically on install). Pin a release tag: an unpinned
 `github:trajectiq-ai/E2E` runs whatever is on the default branch at that moment.
 
 ```bash
-npx -y github:trajectiq-ai/E2E#v0.2.0
-npm install -D github:trajectiq-ai/E2E#v0.2.0 @playwright/test   # or as a project dependency
+npx -y github:trajectiq-ai/E2E#v0.2.1
+npm install -D github:trajectiq-ai/E2E#v0.2.1 @playwright/test   # or as a project dependency
 npx playwright install chromium
 ```
 
@@ -379,7 +379,7 @@ Or grab the packaged tarball from the repo's **GitHub Releases** page and instal
 it locally:
 
 ```bash
-npm install -D https://github.com/trajectiq-ai/E2E/releases/download/v0.2.0/playwright-e2e-mcp-0.2.0.tgz
+npm install -D https://github.com/trajectiq-ai/E2E/releases/download/v0.2.1/playwright-e2e-mcp-0.2.1.tgz
 ```
 
 Listed in the **official [MCP Registry](https://registry.modelcontextprotocol.io/)** as
@@ -395,7 +395,7 @@ Listed in the **official [MCP Registry](https://registry.modelcontextprotocol.io
   "mcpServers": {
     "playwright-e2e": {
       "command": "npx",
-      "args": ["-y", "github:trajectiq-ai/E2E#v0.2.0"],
+      "args": ["-y", "github:trajectiq-ai/E2E#v0.2.1"],
       "env": { "PW_MCP_PROJECT_ROOT": "/absolute/path/to/your/project" }
     }
   }
@@ -409,8 +409,8 @@ when the client launches it somewhere else (e.g. your home directory).
 **Codex / VS Code / Copilot CLIs:**
 
 ```bash
-codex mcp add playwright-e2e -- npx -y github:trajectiq-ai/E2E#v0.2.0
-code --add-mcp '{"name":"playwright-e2e","command":"npx","args":["-y","github:trajectiq-ai/E2E#v0.2.0"]}'
+codex mcp add playwright-e2e -- npx -y github:trajectiq-ai/E2E#v0.2.1
+code --add-mcp '{"name":"playwright-e2e","command":"npx","args":["-y","github:trajectiq-ai/E2E#v0.2.1"]}'
 ```
 
 Codex's defaults fight this server: the first launch clones the repo and runs
@@ -421,7 +421,7 @@ Codex's defaults fight this server: the first launch clones the repo and runs
 ```toml
 [mcp_servers.playwright-e2e]
 command = "npx"
-args = ["-y", "github:trajectiq-ai/E2E#v0.2.0"]
+args = ["-y", "github:trajectiq-ai/E2E#v0.2.1"]
 startup_timeout_sec = 60
 tool_timeout_sec = 600
 ```
@@ -436,7 +436,7 @@ into `PW_MCP_PROJECT_ROOT`, so the tools point at a real project from the first 
 **Claude Code:**
 
 ```bash
-claude mcp add playwright-e2e -- npx -y github:trajectiq-ai/E2E#v0.2.0
+claude mcp add playwright-e2e -- npx -y github:trajectiq-ai/E2E#v0.2.1
 ```
 
 **Gemini CLI / Qwen Code:** paste the `mcpServers` block above into

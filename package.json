@@ -50,17 +50,19 @@
     "test": "npm run build && node test/run-tests.mjs",
     "e2e": "npm run build && node e2e/run.mjs",
     "mcpb": "npm run build && node scripts/build-mcpb.mjs",
-    "mcpb:smoke": "npm run mcpb && node scripts/mcpb-launch-sim.mjs",
+    "mcpb:smoke": "npm run mcpb && node scripts/mcpb-launch-sim.mjs && node scripts/mcpb-client-check.mjs",
     "prepublishOnly": "npm test"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "zod": "^4.2.0",
-    "@modelcontextprotocol/server": "^2.3.1"
+    "@modelcontextprotocol/server": "^2.3.1",
+    "zod": "^4.2.0"
   },
   "devDependencies": {
+    "@anthropic-ai/mcpb": "^2.1.2",
+    "@modelcontextprotocol/client": "^2.3.1",
     "@playwright/test": "1.63.0",
     "@types/node": "^24.19.1",
     "typescript": "^5.9.3"

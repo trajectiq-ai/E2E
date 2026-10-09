@@ -143,16 +143,23 @@ export function verifyRelease({ tag, dir, localBundle, pkg: packageJson }) {
 
   // A signed bundle is the reproducible bundle plus a PKCS#7 block: stripping
   // the signature must give back exactly the bytes the rebuild produced.
+  //
+  // Every `add` below passes evidence on success and the discrepancy on
+  // failure, never a failure sentence that would print next to PASS.
   if (existsSync(publishedSigned)) {
     const scratch = mkdtempSync(path.join(os.tmpdir(), 'verify-release-unsign-'));
     try {
       const stripped = path.join(scratch, 'stripped.mcpb');
       writeFileSync(stripped, readFileSync(publishedSigned));
       runCli(['unsign', stripped]);
+      const strippedHash = sha256File(stripped);
+      const same = hashesMatch(strippedHash, localHash);
       add(
         'the signed bundle unsigns back to the reproducible bundle',
-        hashesMatch(sha256File(stripped), localHash),
-        `${signedName} minus its signature is not the rebuilt bundle`,
+        same,
+        same
+          ? `${signedName} minus its signature is ${strippedHash}`
+          : `${signedName} minus its signature is ${strippedHash}, not the rebuilt ${localHash}`,
       );
     } catch (err) {
       add('the signed bundle unsigns back to the reproducible bundle', false, String(err.message ?? err));

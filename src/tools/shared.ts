@@ -251,6 +251,17 @@ export function clipLines(text: string, maxLines: number, maxChars = 4_000): str
   return final.length > maxChars ? `${final.slice(0, maxChars)}…` : final;
 }
 
+/**
+ * Escape a value so it cannot break out of a Markdown table cell.
+ *
+ * Backslashes are escaped before pipes: escaping only `|` lets an input that
+ * ends in `\` consume the inserted backslash, leaving a live `|` that splits
+ * the row (CodeQL js/incomplete-sanitization).
+ */
+export function markdownCell(text: string): string {
+  return text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+}
+
 export function renderFailure(failure: TestFailure, index: number, total: number): string {
   const location = failure.file ? `\`${failure.file}${failure.line ? `:${failure.line}` : ''}\`` : '_config_';
   const meta = [

@@ -22,6 +22,7 @@ import {
   clipLines,
   formatDuration,
   guard,
+  markdownCell,
   resolveConfigSelection,
   resolveProjectRoot,
   sanitizeTestPathArgument,
@@ -194,7 +195,7 @@ function renderDiagnosis(
         : run.errorKind
           ? `🛑 ${run.errorKind}`
           : '❌ failed';
-    const failure = run.headline ? clipLines(run.headline, 1, 160).replace(/\|/g, '\\|') : '—';
+    const failure = run.headline ? markdownCell(clipLines(run.headline, 1, 160)) : '—';
     lines.push(`| ${i + 1} | ${status} | ${formatDuration(run.durationMs)} | ${failure} |`);
   });
 

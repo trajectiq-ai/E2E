@@ -16,7 +16,14 @@ import {
   testStats,
 } from '../utils/run-history.js';
 import type { HistoryEntry, TestStats } from '../utils/run-history.js';
-import { clipLines, formatDuration, guard, resolveProjectRoot, toolText } from './shared.js';
+import {
+  clipLines,
+  formatDuration,
+  guard,
+  markdownCell,
+  resolveProjectRoot,
+  toolText,
+} from './shared.js';
 
 const analyzeHistoryInput = z.object({
   view: z
@@ -33,7 +40,6 @@ export type AnalyzeHistoryInput = z.infer<typeof analyzeHistoryInput>;
 export const analyzeHistorySchema = analyzeHistoryInput;
 
 const pct = (n: number): string => `${Math.round(n * 100)}%`;
-const cell = (text: string): string => text.replace(/\|/g, '\\|');
 
 function strip(stats: TestStats, width = 20): string {
   const s = stats.strip.length > width ? `…${stats.strip.slice(-width)}` : stats.strip;
@@ -117,7 +123,7 @@ export const analyzeHistoryTool = {
         }
         lines.push('| # | kind | failures | tests | example error |', '| ---: | --- | ---: | ---: | --- |');
         patterns.slice(0, limit).forEach((p, i) => {
-          lines.push(`| ${i + 1} | ${p.kind} | ${p.count} | ${p.tests.length} | ${cell(clipLines(p.example || p.signature, 1, 140))} |`);
+          lines.push(`| ${i + 1} | ${p.kind} | ${p.count} | ${p.tests.length} | ${markdownCell(clipLines(p.example || p.signature, 1, 140))} |`);
         });
         lines.push('');
         const shared = patterns.filter((p) => p.tests.length > 1);
@@ -149,7 +155,7 @@ export const analyzeHistoryTool = {
           '| ---: | --- | ---: | ---: | ---: | --- |',
         );
         ranking.flaky.slice(0, limit).forEach((s, i) => {
-          lines.push(`| ${i + 1} | ${cell(clipLines(s.key, 1, 120))} | ${s.runs} | ${pct(s.failRate)} | ${pct(s.flipRate)} | ${strip(s)} |`);
+          lines.push(`| ${i + 1} | ${markdownCell(clipLines(s.key, 1, 120))} | ${s.runs} | ${pct(s.failRate)} | ${pct(s.flipRate)} | ${strip(s)} |`);
         });
         lines.push('');
       }

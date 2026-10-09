@@ -17,6 +17,7 @@ import type {
   ReportStats,
   ReportSuite,
   TestFailure,
+  TestOutcome,
   TestStatus,
 } from '../types/index.js';
 import { isAbsolutePath, isPathInside, normalizePath, relativeToRoot, resolvePath } from './path-utils.js';
@@ -32,6 +33,8 @@ export interface ParsedReport {
   failuresTruncated: boolean;
   /** Every test case in the report (used by --list parsing). */
   tests: DiscoveredTest[];
+  /** Final outcome per test case and project (used by run history). */
+  outcomes: TestOutcome[];
   specCount: number;
   projects: string[];
   configPath: string | null;
@@ -291,6 +294,7 @@ export function parseReportJson(raw: string, root = '', maxFailures = MAX_FAILUR
       failures: [],
       failuresTruncated: false,
       tests: [],
+      outcomes: [],
       specCount: 0,
       projects: [],
       configPath: null,
@@ -310,6 +314,7 @@ export function parseReport(report: unknown, root = '', maxFailures = MAX_FAILUR
     failures: [],
     failuresTruncated: false,
     tests: [],
+    outcomes: [],
     specCount: 0,
     projects: [],
     configPath: null,
@@ -415,6 +420,26 @@ export function parseReport(report: unknown, root = '', maxFailures = MAX_FAILUR
     if (project?.name) ctx.projectsSeen.add(project.name);
   }
 
+  const outcomes: TestOutcome[] = [];
+  for (const record of ctx.records) {
+    for (const outcome of record.outcomes) {
+      const entry: TestOutcome = {
+        file: record.file,
+        line: record.line,
+        title: record.titlePath.join(' › '),
+        project: outcome.project,
+        status: outcome.status,
+        durationMs: outcome.durationMs,
+      };
+      if (outcome.status === 'failed' || outcome.status === 'timedOut' || outcome.status === 'flaky') {
+        const message = stripAnsi(outcome.error?.message ?? '').trim();
+        entry.message = (message.split('\n')[0] ?? '').slice(0, 200) || undefined;
+        entry.failureKind = classifyFailure(`${message}\n${stripAnsi(outcome.error?.stack ?? '')}`, outcome.status);
+      }
+      outcomes.push(entry);
+    }
+  }
+
   const totalTestCases = ctx.records.reduce((sum, record) => {
     return sum + (record.outcomes.length > 0 ? record.outcomes.length : 1);
   }, 0);
@@ -427,6 +452,7 @@ export function parseReport(report: unknown, root = '', maxFailures = MAX_FAILUR
     failures,
     failuresTruncated,
     tests,
+    outcomes,
     specCount: totalTestCases,
     projects: [...ctx.projectsSeen],
     configPath,

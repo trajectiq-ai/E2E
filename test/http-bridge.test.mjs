@@ -101,7 +101,7 @@ test('initialize handshake answers with server info', async () => {
   assert.match(res.headers.get('content-type') ?? '', /(?:application\/json|text\/event-stream)/);
 });
 
-test('tools/list exposes all eight tools', async () => {
+test('tools/list exposes all eleven tools', async () => {
   const { res, json } = await post({
     jsonrpc: '2.0',
     id: 2,
@@ -112,13 +112,16 @@ test('tools/list exposes all eight tools', async () => {
   assert.ok(json?.result, `expected a result, got ${JSON.stringify(json?.error)}`);
   const names = json.result.tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, [
+    'analyze-history',
     'compare-visual-state',
     'diagnose-flaky',
     'generate-e2e-test',
     'get-failure',
+    'get-run-status',
     'inspect-page',
     'list-tests',
     'run-test',
+    'suggest-fix',
     'validate-selector',
   ]);
   for (const tool of json.result.tools) {
@@ -188,7 +191,7 @@ test('without a token only read-only tools are served', async () => {
   );
   assert.equal(res.status, 200);
   const names = json.result.tools.map((tool) => tool.name).sort();
-  assert.deepEqual(names, ['get-failure', 'list-tests']);
+  assert.deepEqual(names, ['analyze-history', 'get-failure', 'list-tests']);
 });
 
 test('the Host allowlist rejects unexpected hosts', async () => {

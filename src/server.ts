@@ -1,7 +1,8 @@
 /**
- * MCP server setup: creates the McpServer instance, registers the eight
- * tools (with spec tool annotations), and wires each invocation to a ToolContext (per-tool logger,
- * abort signal, shared store, default project root).
+ * MCP server setup: creates the McpServer instance, registers the eleven
+ * tools (with spec tool annotations) and the workflow prompts, and wires
+ * each invocation to a ToolContext (per-tool logger, abort signal, progress
+ * reporter, shared store, default project root).
  *
  * Logs go to stderr only — stdout belongs to the MCP protocol.
  */
@@ -24,6 +25,10 @@ import { validateSelectorTool } from './tools/validate-selector.js';
 import { generateE2ETestTool } from './tools/generate-e2e-test.js';
 import { compareVisualStateTool } from './tools/compare-visual-state.js';
 import { diagnoseFlakyTool } from './tools/diagnose-flaky.js';
+import { suggestFixTool } from './tools/suggest-fix.js';
+import { analyzeHistoryTool } from './tools/analyze-history.js';
+import { getRunStatusTool } from './tools/get-run-status.js';
+import { registerPrompts } from './prompts.js';
 
 const require = createRequire(import.meta.url);
 
@@ -66,6 +71,18 @@ const TOOLS: ToolSpec[] = [
     handler: runTestTool.handler as ToolSpec['handler'],
   },
   {
+    ...getRunStatusTool,
+    title: 'Check a background run',
+    // Reads in-memory run state; cancel stops the run it started.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    handler: getRunStatusTool.handler as ToolSpec['handler'],
+  },
+  {
     ...getFailureTool,
     title: 'Analyze a test failure',
     // Pure reads: JSON report, trace.zip, generated failure summaries.
@@ -75,6 +92,19 @@ const TOOLS: ToolSpec[] = [
       openWorldHint: false,
     },
     handler: getFailureTool.handler as ToolSpec['handler'],
+  },
+  {
+    ...suggestFixTool,
+    title: 'Suggest (and apply) a fix',
+    // Opens the trace snapshot or a live page; with apply it edits the spec
+    // file and re-runs the test, restoring the file if the re-run fails.
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    handler: suggestFixTool.handler as ToolSpec['handler'],
   },
   {
     ...inspectPageTool,
@@ -100,7 +130,7 @@ const TOOLS: ToolSpec[] = [
   },
   {
     ...validateSelectorTool,
-    title: 'Validate CSS selector',
+    title: 'Validate selector or locator',
     // Opens a page and queries the selector; no state-changing actions.
     annotations: {
       readOnlyHint: true,
@@ -146,6 +176,17 @@ const TOOLS: ToolSpec[] = [
     },
     handler: diagnoseFlakyTool.handler as ToolSpec['handler'],
   },
+  {
+    ...analyzeHistoryTool,
+    title: 'Analyze run history',
+    // Reads the local history file only.
+    annotations: {
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    handler: analyzeHistoryTool.handler as ToolSpec['handler'],
+  },
 ];
 
 export interface CreateServerOptions {
@@ -167,7 +208,7 @@ export interface CreateServerOptions {
  * restricted mode, where list-tests scans sources instead of spawning
  * Playwright (which would execute the project's config and spec files).
  */
-export const READ_ONLY_TOOLS: readonly string[] = ['list-tests', 'get-failure'];
+export const READ_ONLY_TOOLS: readonly string[] = ['list-tests', 'get-failure', 'analyze-history'];
 
 export function resolveDefaultProjectRoot(): string {
   const fromEnv = process.env.PW_MCP_PROJECT_ROOT;
@@ -207,7 +248,23 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
         annotations: tool.annotations,
       },
       async (args: unknown, reqCtx: ServerContext) => {
+        const progressToken = reqCtx.mcpReq._meta?.progressToken;
+        let lastProgress = -1;
         const ctx: ToolContext = {
+          progress:
+            progressToken === undefined
+              ? undefined
+              : (progress, total, message) => {
+                  // The spec requires progress to increase with every notification.
+                  const value = Math.max(progress, lastProgress + 0.001);
+                  lastProgress = value;
+                  void reqCtx.mcpReq
+                    .notify({
+                      method: 'notifications/progress',
+                      params: { progressToken, progress: value, ...(total !== undefined ? { total } : {}), ...(message ? { message } : {}) },
+                    })
+                    .catch(() => undefined);
+                },
           logger: logger.child({ tool: tool.name }),
           // v2: the request abort signal lives under ctx.mcpReq.
           signal: options.requestSignal
@@ -228,6 +285,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
       },
     );
   }
+
+  if (!options.tools) registerPrompts(server);
 
   logger.debug('server created', { version: SERVER_VERSION, projectRoot, tools: enabled.length });
   return server;

@@ -223,7 +223,8 @@ export function serializeDomTree(node: unknown, depth = 0): string | undefined {
 
   let attrText = '';
   for (const [name, value] of Object.entries(attrs)) {
-    if (name.startsWith('#') || value === undefined || value === null) continue;
+    // Skip snapshot bookkeeping (`__playwright_value_`, `__playwright_current_src__`…).
+    if (name.startsWith('#') || name.startsWith('__playwright') || value === undefined || value === null) continue;
     const rendered = typeof value === 'string' ? value : String(value);
     attrText += ` ${name}="${escapeHtml(rendered)}"`;
   }
@@ -318,14 +319,82 @@ interface SnapshotCandidate {
   time?: number;
 }
 
-function snapshotFrom(event: TraceEvent): { html?: string; hash?: string } {
+/**
+ * Playwright records frame snapshots incrementally: an unchanged subtree is
+ * stored as a reference `[[snapshotsAgo, nodeIndex]]` into an earlier
+ * snapshot of the same frame, where nodeIndex counts that snapshot's nodes in
+ * post-order (text nodes included, references skipped). This store keeps each
+ * frame's snapshots and expands references back into full trees, as the trace
+ * viewer does.
+ */
+export class SnapshotStore {
+  private readonly frames = new Map<string, unknown[]>();
+  private readonly nodeCache = new Map<unknown, unknown[]>();
+
+  /** Record a snapshot tree; returns its index within the frame. */
+  add(frameId: string, tree: unknown): number {
+    const list = this.frames.get(frameId) ?? [];
+    list.push(tree);
+    this.frames.set(frameId, list);
+    return list.length - 1;
+  }
+
+  private nodes(tree: unknown): unknown[] {
+    const cached = this.nodeCache.get(tree);
+    if (cached) return cached;
+    const out: unknown[] = [];
+    const visit = (n: unknown, depth: number): void => {
+      if (depth > 400) return;
+      if (typeof n === 'string') {
+        out.push(n);
+      } else if (Array.isArray(n) && typeof n[0] === 'string') {
+        for (let i = 2; i < n.length; i += 1) visit(n[i], depth + 1);
+        out.push(n);
+      }
+    };
+    visit(tree, 0);
+    this.nodeCache.set(tree, out);
+    return out;
+  }
+
+  /** The snapshot at `index` with every reference expanded. */
+  expand(frameId: string, index: number): unknown {
+    const list = this.frames.get(frameId) ?? [];
+    let budget = 200_000;
+    const walk = (n: unknown, at: number, depth: number): unknown => {
+      if (depth > 400 || (budget -= 1) < 0) return '';
+      if (typeof n === 'string') return n;
+      if (!Array.isArray(n)) return '';
+      if (Array.isArray(n[0])) {
+        const [ago, nodeIndex] = n[0] as [unknown, unknown];
+        if (typeof ago !== 'number' || typeof nodeIndex !== 'number') return '';
+        const ref = at - ago;
+        if (ref < 0 || ref > at) return '';
+        const target = this.nodes(list[ref])[nodeIndex];
+        return target === undefined ? '' : walk(target, ref, depth + 1);
+      }
+      if (typeof n[0] !== 'string') return '';
+      const attrs = n[1] && typeof n[1] === 'object' && !Array.isArray(n[1]) ? n[1] : {};
+      const childStart = attrs === n[1] ? 2 : 1;
+      return [n[0], attrs, ...n.slice(childStart).map((child) => walk(child, at, depth + 1))];
+    };
+    return walk(list[index], index, 0);
+  }
+}
+
+function snapshotFrom(event: TraceEvent, store?: SnapshotStore): { html?: string; hash?: string } {
   const snapshot = event.snapshot;
   if (typeof snapshot === 'string') return { hash: snapshot };
   if (snapshot && typeof snapshot === 'object') {
-    const s = snapshot as { html?: unknown; hash?: unknown };
+    const s = snapshot as { html?: unknown; hash?: unknown; frameId?: unknown };
     if (typeof s.hash === 'string') return { hash: s.hash };
     if (s.html !== undefined) {
-      const html = serializeDomTree(s.html);
+      let tree: unknown = s.html;
+      if (store) {
+        const frameId = typeof s.frameId === 'string' ? s.frameId : '';
+        tree = store.expand(frameId, store.add(frameId, s.html));
+      }
+      const html = serializeDomTree(tree);
       if (html) return { html };
     }
   }
@@ -340,7 +409,9 @@ export function analyzeTraceEvents(
   lines: string | string[],
   snapshotLoader: (hash: string) => string | undefined,
   fileLoader?: (name: string) => string | undefined,
+  options: TraceReadOptions = {},
 ): FailureTraceContext {
+  const maxHtmlChars = options.maxHtmlChars ?? MAX_HTML_CHARS;
   const rawLines = Array.isArray(lines) ? lines : lines.split(/\r?\n/);
   const warnings: string[] = [];
   const actionLog: TraceActionLogEntry[] = [];
@@ -364,6 +435,7 @@ export function analyzeTraceEvents(
   const pendingByCall = new Map<string, ActionInfo>();
   let pendingSingle: ActionInfo | undefined;
   const snapshots: SnapshotCandidate[] = [];
+  const snapshotStore = new SnapshotStore();
   const beforeTime = new Map<string, number>();
   let currentHash: string | undefined;
   let errorContextFile: string | undefined;
@@ -414,7 +486,7 @@ export function analyzeTraceEvents(
     }
 
     if (event.snapshot !== undefined) {
-      const { html, hash } = snapshotFrom(event);
+      const { html, hash } = snapshotFrom(event, snapshotStore);
       if (hash) currentHash = hash;
       if (html || hash) {
         snapshots.push({
@@ -492,9 +564,9 @@ export function analyzeTraceEvents(
   let snapshotHtml: string | undefined;
   let snapshotTruncated = false;
   const truncate = (html: string): string => {
-    if (html.length > MAX_HTML_CHARS) {
+    if (html.length > maxHtmlChars) {
       snapshotTruncated = true;
-      return html.slice(0, MAX_HTML_CHARS);
+      return html.slice(0, maxHtmlChars);
     }
     return html;
   };
@@ -691,7 +763,12 @@ export function parseNetworkLog(text: string): {
  * error-context attachment. Returns null when the file is
  * missing/unreadable — callers degrade to a hint instead of failing.
  */
-export async function readFailureTrace(tracePath: string): Promise<FailureTraceContext | null> {
+export interface TraceReadOptions {
+  /** Cap for the DOM snapshot (default 12000 chars, sized for display). */
+  maxHtmlChars?: number;
+}
+
+export async function readFailureTrace(tracePath: string, options: TraceReadOptions = {}): Promise<FailureTraceContext | null> {
   let buf: Buffer;
   try {
     buf = await readFile(tracePath);
@@ -735,6 +812,7 @@ export async function readFailureTrace(tracePath: string): Promise<FailureTraceC
     traceLines,
     (hash) => loadSnapshotSync(entries, hash),
     (name) => loadFromZip(entries, [name, `attachments/${name}`]),
+    options,
   );
 
   // Network diagnostics: merge the *.network resource logs.

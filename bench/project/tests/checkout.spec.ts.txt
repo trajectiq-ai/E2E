@@ -1,0 +1,7 @@
+import { expect, test } from '@playwright/test';
+
+test('cart proceeds to checkout', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Your cart' })).toBeVisible();
+  await page.getByTestId('checkout-button').click({ timeout: 3000 });
+});

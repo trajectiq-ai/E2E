@@ -43,20 +43,28 @@ its selector, failed network requests, console errors and warnings, and next ste
 | `waitUntil` | `load` \| `domcontentloaded` \| `networkidle` | Navigation wait |
 | `includeHtml` | boolean | Include rendered HTML (capped by `maxHtmlChars`, default 20000) |
 | `timeoutMs` | number | Default 45000 |
+| `view` | `elements` \| `locators` | `locators`: compact map of interactive elements with verified locators |
+| `storageState` | string | Playwright storageState JSON inside the project (signed-in session) |
+| `headers` | object | Extra HTTP headers |
+| `actions` | array | Up to 20 steps after load: `{ type: click\|fill\|press\|check\|select\|hover\|wait\|goto…, locator?, value?, url?, ms? }` |
+| `viewport` | object | `{ width, height }` |
 
-Returns each element's unique CSS selector, tag, visibility, bounding box, text
-and attributes, plus console messages.
+Returns each element's Playwright locators proven unique on the page (role +
+name first), unique CSS selector, tag, visibility, box, text and attributes,
+plus console messages. `validate-selector` and `compare-visual-state` take the
+same `storageState`, `headers`, `actions` and `viewport`.
 
 ## validate-selector
 
 | Argument | Type | Notes |
 | --- | --- | --- |
 | `url` | string | Required |
-| `selector` | string | Required, plain CSS |
+| `selector` | string | Required: CSS, a Playwright selector, or a locator such as `getByRole('button', { name: 'Save' })` |
 | `timeoutMs` | number | Default 45000 |
 
-Verdicts: `✅ VALID — N matches` with samples, `✅ VALID — 0 matches` with advice,
-`❌ INVALID` with the parse error, or a warning for Playwright-only syntax.
+Verdicts: `✅ VALID — N matches` with samples and a unique locator for each,
+a strict-mode warning when more than one matches, `✅ VALID — 0 matches` with
+advice, or `❌ INVALID` with the parse error.
 
 ## list-tests
 
@@ -107,3 +115,37 @@ Baselines live in `.pw-mcp/visual/`.
 
 Runs with retries disabled and returns `CONSISTENTLY FAILING`, `FLAKY` or
 `NOT REPRODUCING`, a per-run table and the number of distinct error signatures.
+
+## suggest-fix
+
+| Argument | Type | Notes |
+| --- | --- | --- |
+| `index` | number | 1-based failure index from the last run (default 1) |
+| `apply` | boolean | Write the fix (default false: diff only) |
+| `verify` | boolean | After applying, re-run and revert if still failing (default true) |
+| `allowExpectationUpdate` | boolean | Allow applying a changed expected text (default false) |
+| `url`, `storageState`, `headers` | | Heal against a live page instead of the trace snapshot |
+| `config`, `timeoutMs` | | As `run-test` |
+
+Returns a unified diff with confidence `high` or `medium`, or refuses and says the
+element is most likely missing.
+
+## get-run-status
+
+| Argument | Type | Notes |
+| --- | --- | --- |
+| `runId` | string | From `run-test` with `background: true` (default: latest) |
+| `waitSeconds` | number | Wait up to this long (max 55) |
+| `cancel` | boolean | Stop the run |
+
+## analyze-history
+
+| Argument | Type | Notes |
+| --- | --- | --- |
+| `view` | `flaky` \| `patterns` \| `test` | Default `flaky` |
+| `test` | string | Substring of a test's file or title |
+| `lastRuns` | number | Default 30 |
+| `limit` | number | Default 15 |
+
+Reads `.playwright-e2e-mcp/history.jsonl`, written by every run
+(`PW_MCP_HISTORY=0` disables it).

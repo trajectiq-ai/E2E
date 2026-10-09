@@ -9,19 +9,22 @@
  *   2. boots the real MCP server (dist/index.js) over stdio with
  *      PW_MCP_PROJECT_ROOT pointing at e2e/fixture,
  *   3. drives it through the MCP protocol exactly like a client would, and
- *   4. asserts ~40 behaviours that only appear end-to-end:
- *      handshake + tool annotations, live DOM inspection, CSS selector
- *      validation, visual baseline/diff (blue → red), pass/fail/lastFailed
- *      Playwright runs, trace network-404 + console-error diagnostics,
- *      auto-retry flaky reporting, diagnose-flaky verdicts, scaffold
- *      generation and error paths.
+ *   4. asserts ~90 behaviours that only appear end-to-end:
+ *      handshake + tool annotations + prompts, live DOM inspection with
+ *      verified role locators, selector/locator validation, pages behind a
+ *      login (storageState) and after steps (actions), visual baseline/diff
+ *      (blue → red), pass/fail/lastFailed Playwright runs with progress
+ *      notifications, background runs, trace network-404 + console-error
+ *      diagnostics, suggest-fix (refusal on a missing element, verified heal
+ *      of a renamed one), auto-retry flaky reporting, diagnose-flaky
+ *      verdicts, run history ranking, scaffold generation and error paths.
  *
  * Exit code 0 only when every check passes.
  */
 
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -32,13 +35,16 @@ const serverEntry = path.join(repoRoot, 'dist', 'index.js');
 
 const COLORS = { blue: 'rgb(37, 99, 235)', red: 'rgb(220, 38, 38)' };
 const EXPECTED_TOOLS = [
+  'analyze-history',
   'compare-visual-state',
   'diagnose-flaky',
   'generate-e2e-test',
   'get-failure',
+  'get-run-status',
   'inspect-page',
   'list-tests',
   'run-test',
+  'suggest-fix',
   'validate-selector',
 ];
 
@@ -94,6 +100,24 @@ function pageHtml(flipped) {
 `;
 }
 
+function accountHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Your account</title></head>
+<body>
+  <h1>Your account</h1>
+  <button id="open-settings">Open settings</button>
+  <dialog id="settings"><h2>Settings</h2><label for="nick">Nickname</label><input id="nick"><button>Save settings</button></dialog>
+  <script>
+    document.getElementById('open-settings').addEventListener('click', function () {
+      document.getElementById('settings').showModal();
+    });
+  </script>
+</body>
+</html>
+`;
+}
+
 function startFixtureServer() {
   return new Promise((resolve, reject) => {
     const state = { flipped: false };
@@ -101,6 +125,20 @@ function startFixtureServer() {
       if (req.method === 'POST' && req.url === '/flip') {
         state.flipped = !state.flipped;
         res.writeHead(204).end();
+        return;
+      }
+      if (req.method === 'GET' && req.url === '/account') {
+        if (!/(^|;\s*)session=ok(;|$)/.test(req.headers.cookie ?? '')) {
+          res.writeHead(302, { location: '/login' }).end();
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(accountHtml());
+        return;
+      }
+      if (req.method === 'GET' && req.url === '/login') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end('<!doctype html><title>Sign in</title><h1>Sign in</h1><label for="email">Email</label><input id="email"><button>Sign in</button>');
         return;
       }
       if (req.method === 'GET' && (req.url === '/' || req.url.startsWith('/?'))) {
@@ -143,6 +181,7 @@ class McpClient {
     this.buffer = '';
     this.stderr = '';
     this.exited = null;
+    this.notifications = [];
 
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
@@ -157,6 +196,10 @@ class McpClient {
           message = JSON.parse(line);
         } catch {
           continue; // Non-protocol noise on stdout is a bug we surface elsewhere.
+        }
+        if (message.id === undefined && typeof message.method === 'string') {
+          this.notifications.push(message);
+          continue;
         }
         if (message.id === undefined || !this.pending.has(message.id)) continue;
         const entry = this.pending.get(message.id);
@@ -237,8 +280,8 @@ class McpClient {
   }
 }
 
-async function callTool(client, name, args, timeoutMs = 150_000) {
-  const result = await client.request('tools/call', { name, arguments: args }, timeoutMs);
+async function callTool(client, name, args, timeoutMs = 150_000, meta) {
+  const result = await client.request('tools/call', { name, arguments: args, ...(meta ? { _meta: meta } : {}) }, timeoutMs);
   const text = (result.content ?? [])
     .filter((part) => part.type === 'text')
     .map((part) => part.text)
@@ -251,7 +294,7 @@ async function callTool(client, name, args, timeoutMs = 150_000) {
 /* ------------------------------------------------------------------ */
 
 function cleanFixture() {
-  const stale = ['test-results', 'playwright-report', 'blob-report', '.pw-mcp', 'tests/generated', 'tests/.flaky-marker'];
+  const stale = ['test-results', 'playwright-report', 'blob-report', '.pw-mcp', '.playwright-e2e-mcp', '.auth', 'tests/generated', 'tests/.flaky-marker', 'tests/heal.spec.ts'];
   for (const entry of stale) {
     rmSync(path.join(fixtureRoot, entry), { recursive: true, force: true });
   }
@@ -278,7 +321,13 @@ async function phaseHandshake(client, pkg) {
   const list = await client.request('tools/list', {}, 30_000);
   const tools = list.tools ?? [];
   const names = tools.map((tool) => tool.name).sort();
-  check('tools/list exposes all 8 tools', JSON.stringify(names) === JSON.stringify(EXPECTED_TOOLS), `got ${JSON.stringify(names)}`);
+  check(`tools/list exposes all ${EXPECTED_TOOLS.length} tools`, JSON.stringify(names) === JSON.stringify(EXPECTED_TOOLS), `got ${JSON.stringify(names)}`);
+
+  const prompts = await client.request('prompts/list', {}, 30_000);
+  const promptNames = (prompts.prompts ?? []).map((prompt) => prompt.name).sort();
+  check('prompts/list offers the fix and triage workflows', JSON.stringify(promptNames) === JSON.stringify(['fix-failing-test', 'triage-flaky-tests']), `got ${JSON.stringify(promptNames)}`);
+  const fixPrompt = await client.request('prompts/get', { name: 'fix-failing-test', arguments: { test: 'tests/fail.spec.ts' } }, 30_000);
+  contains('fix-failing-test prompt walks the suggest-fix loop', fixPrompt.messages?.[0]?.content?.text, 'suggest-fix');
 
   const missingAnnotations = tools.filter((tool) => typeof tool?.annotations?.readOnlyHint !== 'boolean');
   check('every tool declares spec tool annotations', missingAnnotations.length === 0, `missing readOnlyHint on: ${missingAnnotations.map((t) => t.name).join(', ')}`);
@@ -314,7 +363,57 @@ async function phaseLivePage(client, origin) {
   contains('validate-selector: missing id reports 0 matches', missing.text, 'VALID — 0 matches');
 
   const engine = await callTool(client, 'validate-selector', { url: origin, selector: 'text=Buy now' }, 90_000);
-  contains('validate-selector: Playwright engine syntax flagged', engine.text, 'is not a CSS selector');
+  contains('validate-selector: Playwright selector engines are validated', engine.text, '## ✅ VALID — 1 match');
+  contains('validate-selector: suggests the role locator for the match', engine.text, "unique locator: `getByRole('button', { name: 'Buy now' })`");
+
+  const role = await callTool(client, 'validate-selector', { url: origin, selector: "page.getByRole('button', { name: 'Buy now' })" }, 90_000);
+  contains('validate-selector: getByRole locator matches once', role.text, '## ✅ VALID — 1 match');
+  contains('validate-selector: shows the parsed locator', role.text, "**Parsed as:** `getByRole('button', { name: 'Buy now' })`");
+
+  const unsafe = await callTool(client, 'validate-selector', { url: origin, selector: "getByRole('button').evaluate(() => 1)" }, 30_000);
+  contains('validate-selector: refuses non-locator code', unsafe.text, '## ❌ INVALID');
+
+  const map = await callTool(client, 'inspect-page', { url: origin, view: 'locators' }, 90_000);
+  contains('inspect-page locator map lists the verified role locator', map.text, "`getByRole('button', { name: 'Buy now' })` — button \"Buy now\"");
+  contains('inspect-page locator map offers the test id alternative', map.text, "getByTestId('cta-button')");
+  contains('inspect-page DOM view carries locators too', inspect.text, "locator: `getByRole('button', { name: 'Buy now' })`");
+
+  const loggedOut = await callTool(client, 'inspect-page', { url: `${origin}/account` }, 90_000);
+  contains('inspect-page without a session lands on the login page', loggedOut.text, '"Sign in"');
+  contains('inspect-page hints at storageState on a login page', loggedOut.text, 'Pass `storageState`');
+
+  const host = new URL(origin).hostname;
+  mkdirSync(path.join(fixtureRoot, '.auth'), { recursive: true });
+  writeFileSync(
+    path.join(fixtureRoot, '.auth', 'user.json'),
+    JSON.stringify({ cookies: [{ name: 'session', value: 'ok', domain: host, path: '/', expires: -1, httpOnly: false, secure: false, sameSite: 'Lax' }], origins: [] }),
+  );
+  const loggedIn = await callTool(
+    client,
+    'inspect-page',
+    {
+      url: `${origin}/account`,
+      storageState: '.auth/user.json',
+      view: 'locators',
+      actions: [{ type: 'click', locator: "getByRole('button', { name: 'Open settings' })" }],
+    },
+    90_000,
+  );
+  contains('storageState opens the page behind the login', loggedIn.text, '"Your account"');
+  contains('page state line names the session file', loggedIn.text, 'session `.auth/user.json`');
+  contains('actions reach the settings dialog', loggedIn.text, "getByRole('heading', { name: 'Settings' })");
+  contains('locators inside the dialog are verified', loggedIn.text, "getByRole('textbox', { name: 'Nickname' })");
+
+  const escape = await callTool(client, 'inspect-page', { url: origin, storageState: '../../package.json' }, 30_000);
+  check('storageState outside the project is refused', escape.isError && escape.text.includes('INVALID_PATH'), escape.text.slice(0, 300));
+
+  const badStep = await callTool(
+    client,
+    'inspect-page',
+    { url: origin, actions: [{ type: 'click', locator: "getByRole('button', { name: 'Does not exist' })" }], timeoutMs: 30_000 },
+    60_000,
+  );
+  check('a failing action names the step', badStep.isError && badStep.text.includes('step 1 (click'), badStep.text.slice(0, 400));
 
   const broken = await callTool(client, 'validate-selector', { url: origin, selector: 'div >' }, 90_000);
   contains('validate-selector: CSS parse error reported', broken.text, '## ❌ INVALID');
@@ -357,7 +456,10 @@ async function phaseTestRuns(client, origin) {
   check('run-test passes the healthy spec', !pass.isError && pass.text.includes('✅ PASSED'), pass.text.slice(0, 500));
   contains('pass run reports stats | 1 | 0 | 0 | 0 |', pass.text, '| 1 | 0 | 0 | 0 |');
 
-  const fail = await callTool(client, 'run-test', { testFiles: ['tests/fail.spec.ts'], retryOnFailure: false }, 180_000);
+  client.notifications.length = 0;
+  const fail = await callTool(client, 'run-test', { testFiles: ['tests/fail.spec.ts'], retryOnFailure: false }, 180_000, { progressToken: 'e2e-fail' });
+  const progress = client.notifications.filter((n) => n.method === 'notifications/progress' && n.params?.progressToken === 'e2e-fail');
+  check('run-test sends progress notifications', progress.length > 0 && progress.some((n) => n.params.total === 1), JSON.stringify(progress.slice(-2)));
   check('run-test fails the broken spec', !fail.isError && fail.text.includes('❌ FAILED'), fail.text.slice(0, 500));
   contains('fail run names the missing save-btn', fail.text, 'save-btn');
   contains('fail run reports stats | 0 | 1 | 0 | 0 |', fail.text, '| 0 | 1 | 0 | 0 |');
@@ -375,6 +477,10 @@ async function phaseTestRuns(client, origin) {
   contains('get-failure shows the console section', failure.text, '### Console before the failure');
   contains('get-failure provides a diagnosis', failure.text, '### Diagnosis');
   contains('get-failure provides next steps', failure.text, '### Next steps');
+
+  const refuse = await callTool(client, 'suggest-fix', {}, 90_000);
+  contains('suggest-fix refuses to heal a missing element', refuse.text, "No confident replacement for `getByTestId('save-btn')`");
+  contains('suggest-fix explains it is likely an app bug', refuse.text, 'most likely **missing**');
 
   const lastFailed = await callTool(client, 'run-test', { lastFailed: true }, 180_000);
   contains('lastFailed run is labelled (--last-failed)', lastFailed.text, 'failed tests only (--last-failed)');
@@ -416,6 +522,53 @@ async function phaseTestRuns(client, origin) {
     const source = readFileSync(generatedPath, 'utf8');
     contains('generated spec contains a Playwright test', source, 'test(');
   }
+}
+
+async function phaseHistoryAndHeal(client) {
+  const ranking = await callTool(client, 'analyze-history', {}, 30_000);
+  contains('analyze-history ranks the flaky fixture test', ranking.text, '### ⚠️ Flaky');
+  contains('analyze-history names flaky.spec.ts', ranking.text, 'tests/flaky.spec.ts');
+  contains('analyze-history lists the always-failing test as broken', ranking.text, '### ❌ Broken');
+  check('history file written inside the project', existsSync(path.join(fixtureRoot, '.playwright-e2e-mcp', 'history.jsonl')), 'missing history.jsonl');
+  check('history folder ignores itself in git', existsSync(path.join(fixtureRoot, '.playwright-e2e-mcp', '.gitignore')), 'missing .gitignore');
+
+  const patterns = await callTool(client, 'analyze-history', { view: 'patterns' }, 30_000);
+  contains('analyze-history groups failures by cause', patterns.text, '## Failure patterns');
+  const timeline = await callTool(client, 'analyze-history', { test: 'inventory sync' }, 30_000);
+  contains('analyze-history shows one test timeline', timeline.text, '**Timeline (oldest → newest):**');
+
+  const started = await callTool(client, 'run-test', { testFiles: ['tests/pass.spec.ts'], background: true }, 30_000);
+  const runId = /`(run-[a-z0-9-]+)`/.exec(started.text)?.[1];
+  check('run-test background returns a run id at once', Boolean(runId), started.text.slice(0, 300));
+  const status = await callTool(client, 'get-run-status', { runId, waitSeconds: 55 }, 90_000);
+  contains('get-run-status returns the finished result', status.text, '✅ PASSED');
+  contains('get-run-status labels the background run', status.text, `Background run \`${runId}\``);
+
+  // A renamed test id: the element is still there, the locator drifted.
+  const healPath = path.join(fixtureRoot, 'tests', 'heal.spec.ts');
+  writeFileSync(
+    healPath,
+    [
+      "import { expect, test } from '@playwright/test';",
+      '',
+      "test('buy button still works', async ({ page }) => {",
+      "  await page.goto('/');",
+      "  await page.getByTestId('buy-button').click({ timeout: 3000 });",
+      "  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();",
+      '});',
+      '',
+    ].join('\n'),
+  );
+  const broken = await callTool(client, 'run-test', { testFiles: ['tests/heal.spec.ts'], retryOnFailure: false }, 180_000);
+  contains('drifted locator fails first', broken.text, 'buy-button');
+  const proposal = await callTool(client, 'suggest-fix', {}, 90_000);
+  contains('suggest-fix proposes the role locator', proposal.text, "+  await page.getByRole('button', { name: 'Buy now' }).click({ timeout: 3000 });");
+  contains('suggest-fix rates it high confidence', proposal.text, 'confidence **high**');
+  check('suggest-fix without apply leaves the file alone', readFileSync(healPath, 'utf8').includes("getByTestId('buy-button')"), 'file changed');
+  const applied = await callTool(client, 'suggest-fix', { apply: true }, 180_000);
+  contains('suggest-fix apply verifies with a re-run', applied.text, '### ✅ Verified');
+  contains('the spec now uses the healed locator', readFileSync(healPath, 'utf8'), "getByRole('button', { name: 'Buy now' })");
+  rmSync(healPath, { force: true });
 }
 
 async function phaseErrorPaths(client) {
@@ -477,6 +630,7 @@ async function main() {
     await phaseHandshake(client, pkg);
     await phaseLivePage(client, fixture.origin);
     await phaseTestRuns(client, fixture.origin);
+    await phaseHistoryAndHeal(client);
     await phaseErrorPaths(client);
   } catch (error) {
     fatal = error;

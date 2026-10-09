@@ -7,8 +7,9 @@
  * the public surface documented in the README.)
  */
 
-import { rm, stat, writeFile } from 'node:fs/promises';
+import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 import type {
   ErrorKind,
   FailureKind,
@@ -25,13 +26,18 @@ import {
   isPathInside,
   normalizePath,
   resolvePath,
+  relativeToRoot,
   sanitizeUserPath,
   tempFilePath,
+  toNativePath,
 } from '../utils/path-utils.js';
+import { formatLocator, parseLocator } from '../utils/locator-expr.js';
+import type { LocatorCall } from '../utils/locator-expr.js';
+import { PROBE_SCRIPT } from './probe-script.js';
 import { selectConfig } from '../utils/project-detector.js';
 import { childEnv, runProcess } from '../utils/playwright-runner.js';
 import { extractJsonFromText } from '../utils/report-parser.js';
-import { BLOCKED_RANGES, blockPrivateUrls } from '../utils/url-policy.js';
+import { BLOCKED_RANGES, assertUrlAllowed, blockPrivateUrls } from '../utils/url-policy.js';
 
 /* ------------------------------------------------------------------ */
 /* State + responses                                                   */
@@ -290,309 +296,185 @@ export function failureHint(kind: FailureKind): string {
 }
 
 /* ------------------------------------------------------------------ */
-/* Browser child script (inspect-page / validate-selector)             */
+/* Page state: login sessions and steps to reach a UI state            */
 /* ------------------------------------------------------------------ */
 
-/**
- * Runs inside a child `node` process with cwd = project root so that
- * `createRequire(projectRoot/package.json)` resolves the *user's*
- * Playwright install (browsers included). Writes one JSON document to
- * stdout and always exits, so it can never wedge the server.
- */
-const PROBE_SCRIPT = String.raw`
-'use strict';
-const cfg = JSON.parse(process.argv[2]);
+const ACTION_TYPES = ['goto', 'click', 'dblclick', 'hover', 'fill', 'press', 'check', 'uncheck', 'select', 'wait'] as const;
 
-function send(payload) {
-  try { process.stdout.write(JSON.stringify(payload)); } catch (err) { /* ignore */ }
-}
-
-function classifyError(message) {
-  const m = String(message);
-  if (/Executable doesn't exist|Please run the following command to install/i.test(m)) {
-    return { kind: 'NO_PLAYWRIGHT', hint: 'Playwright browsers are not installed for this project. Run: npx playwright install chromium' };
-  }
-  if (/ECONNREFUSED|ERR_CONNECTION_REFUSED|ERR_NAME_NOT_RESOLVED|ERR_EMPTY_RESPONSE|getaddrinfo|net::ERR_/i.test(m)) {
-    return { kind: 'SERVER_NOT_RUNNING', hint: 'The URL is not reachable. Start your dev server (e.g. npm run dev / npm start) and retry.' };
-  }
-  if (/Timeout \d+ms exceeded|timed out/i.test(m)) {
-    return { kind: 'TIMEOUT', hint: 'Raise timeoutMs, or make the page load faster.' };
-  }
-  if (/Target closed|browser has been closed|browser has crashed|Page crashed/i.test(m)) {
-    return { kind: 'BROWSER_CRASH', hint: 'The browser crashed during inspection. Retry; if it persists run: npx playwright install --force' };
-  }
-  if (/Unknown selector|error evaluating selector/i.test(m)) {
-    return { kind: 'INVALID_PATH', hint: 'The selector could not be evaluated.' };
-  }
-  return { kind: 'UNKNOWN', hint: undefined };
-}
-
-async function startGuardProxy(ranges) {
-  const http = require('node:http');
-  const net = require('node:net');
-  const dns = require('node:dns').promises;
-  const blocked = new net.BlockList();
-  for (const r of ranges) blocked.addSubnet(r.address, r.prefix, r.family);
-  const isBlocked = (a) => {
-    const m = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(a);
-    if (m) return blocked.check(m[1], 'ipv4');
-    const f = net.isIP(a);
-    return f === 4 ? blocked.check(a, 'ipv4') : f === 6 ? blocked.check(a, 'ipv6') : true;
-  };
-  // Resolve once and connect to that exact address, so DNS cannot change
-  // between the check and the connection.
-  const allowedAddress = async (host) => {
-    const bare = host.replace(/^\[|\]$/g, '');
-    const addrs = net.isIP(bare) ? [bare] : (await dns.lookup(bare, { all: true, verbatim: true })).map((x) => x.address);
-    if (addrs.length === 0 || addrs.some(isBlocked)) return null;
-    return addrs[0];
-  };
-  const server = http.createServer(async (req, res) => {
-    let target;
-    try {
-      target = new URL(req.url);
-    } catch (err) {
-      res.writeHead(400);
-      res.end();
-      return;
-    }
-    const ip = await allowedAddress(target.hostname).catch(() => null);
-    if (!ip) {
-      res.writeHead(403, { 'content-type': 'text/plain' });
-      res.end('Blocked by playwright-e2e-mcp: private or reserved address');
-      return;
-    }
-    const upstream = http.request(
-      { host: ip, port: target.port || 80, method: req.method, path: target.pathname + target.search, headers: { ...req.headers, host: target.host } },
-      (up) => {
-        res.writeHead(up.statusCode || 502, up.headers);
-        up.pipe(res);
-      },
-    );
-    upstream.on('error', () => {
-      if (!res.headersSent) res.writeHead(502);
-      res.end();
-    });
-    req.pipe(upstream);
-  });
-  server.on('connect', async (req, socket, head) => {
-    socket.on('error', () => undefined);
-    let target;
-    try {
-      target = new URL('http://' + req.url);
-    } catch (err) {
-      socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
-      return;
-    }
-    const ip = await allowedAddress(target.hostname).catch(() => null);
-    if (!ip) {
-      socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
-      return;
-    }
-    const upstream = net.connect(Number(target.port) || 443, ip, () => {
-      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-      if (head && head.length) upstream.write(head);
-      upstream.pipe(socket);
-      socket.pipe(upstream);
-    });
-    upstream.on('error', () => socket.destroy());
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  server.unref();
-  return server.address().port;
-}
-
-(async () => {
-  const { createRequire } = require('node:module');
-  const req = createRequire(cfg.projectRoot + '/package.json');
-  let pw = null;
-  try {
-    pw = req('playwright');
-  } catch (errA) {
-    try {
-      pw = req('@playwright/test');
-    } catch (errB) {
-      send({
-        ok: false,
-        kind: 'NO_PLAYWRIGHT',
-        error: 'Playwright is not installed in ' + cfg.projectRoot,
-        hint: 'Run: npm install -D @playwright/test && npx playwright install',
-      });
-      process.exit(1);
-    }
-  }
-
-  let browser = null;
-  try {
-    const launchOptions = { headless: true };
-    if (cfg.blockPrivate) {
-      // SSRF guard: every browser connection (each redirect hop and
-      // subresource too) goes through this local proxy, which resolves
-      // the host itself and refuses blocked ranges before connecting.
-      const proxyPort = await startGuardProxy(cfg.blockedRanges || []);
-      launchOptions.proxy = { server: 'http://127.0.0.1:' + proxyPort };
-      // WebRTC STUN/TURN over UDP does not go through the proxy; keep it off
-      // so a page cannot send UDP to (or scan) the private network.
-      launchOptions.args = ['--proxy-bypass-list=<-loopback>', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'];
-    }
-    browser = await pw.chromium.launch(launchOptions);
-    const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    const page = await context.newPage();
-
-    const consoleMessages = [];
-    page.on('console', (msg) => {
-      if (consoleMessages.length < 50) consoleMessages.push({ type: msg.type(), text: String(msg.text()).slice(0, 300) });
-    });
-    page.on('pageerror', (err) => {
-      if (consoleMessages.length < 50) consoleMessages.push({ type: 'pageerror', text: String(err).slice(0, 300) });
-    });
-
-    await page.goto(cfg.url, { waitUntil: cfg.waitUntil || 'domcontentloaded', timeout: cfg.gotoTimeout || 15000 });
-    if (cfg.waitFor) await page.waitForSelector(cfg.waitFor, { timeout: cfg.waitTimeout || 5000 });
-
-    if (cfg.mode === 'screenshot') {
-      if (cfg.selector) {
-        await page.locator(cfg.selector).first().screenshot({ path: cfg.screenshotPath });
-      } else {
-        await page.screenshot({ path: cfg.screenshotPath, fullPage: !!cfg.fullPage });
-      }
-      send({
-        ok: true,
-        data: {
-          screenshotPath: cfg.screenshotPath,
-          title: await page.title(),
-          finalUrl: page.url(),
-          viewport: page.viewportSize() || { width: 1280, height: 720 },
-          elementCount: 0,
-          matchCount: 0,
-          elements: [],
-          durationMs: Date.now() - cfg.startedAt,
-        },
-      });
-      await browser.close();
-      process.exit(0);
-    }
-
-    const data = await page.evaluate((input) => {
-      function uniqueSelector(el) {
-        if (el.id) {
-          const css = '#' + (window.CSS && CSS.escape ? CSS.escape(el.id) : el.id);
-          try { if (document.querySelectorAll(css).length === 1) return css; } catch (err) { /* fall through */ }
-        }
-        const parts = [];
-        let node = el;
-        while (node && node.nodeType === 1 && parts.length < 6) {
-          if (node === document.documentElement) { parts.unshift('html'); break; }
-          let part = node.tagName.toLowerCase();
-          const parent = node.parentElement;
-          if (parent) {
-            const siblings = Array.prototype.filter.call(parent.children, (child) => child.tagName === node.tagName);
-            if (siblings.length > 1) {
-              const index = Array.prototype.indexOf.call(siblings, node) + 1;
-              part = part + ':nth-of-type(' + index + ')';
-            }
-          }
-          parts.unshift(part);
-          const candidate = parts.join(' > ');
-          try { if (document.querySelectorAll(candidate).length === 1) return candidate; } catch (err) { /* keep walking */ }
-          node = node.parentElement;
-        }
-        return parts.join(' > ');
-      }
-
-      function describe(el) {
-        const rect = el.getBoundingClientRect();
-        let visible = !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-        try {
-          const style = getComputedStyle(el);
-          if (style.visibility === 'hidden' || style.display === 'none') visible = false;
-        } catch (err) { /* ignore */ }
-        const attributes = {};
-        const attrCount = Math.min(el.attributes.length, 30);
-        for (let i = 0; i < attrCount; i += 1) {
-          const attr = el.attributes[i];
-          attributes[attr.name] = String(attr.value).slice(0, 200);
-        }
-        const classes = Array.prototype.slice.call(el.classList).slice(0, 10);
-        const text = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 160);
-        return {
-          selector: uniqueSelector(el),
-          tag: el.tagName.toLowerCase(),
-          id: el.id || undefined,
-          classes: classes,
-          role: el.getAttribute('role') || undefined,
-          text: text || undefined,
-          attributes: attributes,
-          visible: visible,
-          box: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) },
-        };
-      }
-
-      const result = { matchCount: 0, elementCount: 0, elements: [], parseError: undefined };
-      let source = [];
-      if (input.selector) {
-        try {
-          source = Array.prototype.slice.call(document.querySelectorAll(input.selector));
-        } catch (err) {
-          result.parseError = err && err.message ? err.message : String(err);
-        }
-      } else {
-        source = Array.prototype.slice.call(document.querySelectorAll('*'));
-      }
-      if (result.parseError) return result;
-
-      result.matchCount = source.length;
-      result.elementCount = source.length;
-      const limit = input.mode === 'validate' ? 5 : 100;
-      result.elements = source.slice(0, limit).map(describe);
-
-      if (input.mode === 'inspect') {
-        result.title = document.title;
-        result.finalUrl = location.href;
-        result.viewport = { width: window.innerWidth, height: window.innerHeight };
-        if (input.includeHtml) {
-          const html = document.documentElement.outerHTML;
-          result.html = html.slice(0, input.maxHtml);
-          result.htmlTruncated = html.length > input.maxHtml;
-        }
-      }
-      return result;
-    }, {
-      mode: cfg.mode,
-      selector: cfg.selector,
-      includeHtml: !!cfg.includeHtml,
-      maxHtml: cfg.maxHtmlChars || 20000,
-    });
-
-    data.consoleMessages = consoleMessages;
-    data.durationMs = Date.now() - cfg.startedAt;
-    send({ ok: true, data: data });
-    await browser.close();
-    process.exit(0);
-  } catch (err) {
-    const message = err && err.message ? err.message : String(err);
-    const classified = classifyError(message);
-    send({ ok: false, kind: classified.kind, error: message, hint: classified.hint });
-    try { if (browser) await browser.close(); } catch (closeErr) { /* ignore */ }
-    process.exit(1);
-  }
-})().catch((err) => {
-  send({ ok: false, kind: 'UNKNOWN', error: err && err.message ? err.message : String(err) });
-  process.exit(1);
+export const pageActionSchema = z.object({
+  type: z.enum(ACTION_TYPES),
+  locator: z.string().optional().describe("Locator or selector, e.g. getByRole('button', { name: 'Next' })"),
+  value: z.string().optional().describe('fill text, press key, select option'),
+  url: z.string().optional().describe('goto target (may be relative)'),
+  ms: z.number().int().min(0).max(10_000).optional().describe('wait without locator'),
 });
-`;
 
-export interface BrowserScriptConfig {
-  mode: 'inspect' | 'validate' | 'screenshot';
+/** Signed-in session inputs. */
+export const sessionShape = {
+  storageState: z
+    .string()
+    .optional()
+    .describe('Logged-in session: storageState JSON inside the project, e.g. playwright/.auth/user.json'),
+  headers: z.record(z.string(), z.string()).optional().describe('Extra HTTP headers, e.g. Authorization'),
+};
+
+/** Inputs shared by every tool that opens a page. */
+export const pageStateShape = {
+  ...sessionShape,
+  actions: z.array(pageActionSchema).max(20).optional().describe('Steps run after load to reach a state (modal, step 3)'),
+  viewport: z
+    .object({ width: z.number().int().min(200).max(4_000), height: z.number().int().min(200).max(4_000) })
+    .optional(),
+};
+
+export interface PageStateInput {
+  storageState?: string;
+  headers?: Record<string, string>;
+  actions?: Array<z.infer<typeof pageActionSchema>>;
+  viewport?: { width: number; height: number };
+}
+
+export interface ResolvedPageState {
+  storageState?: string;
+  headers?: Record<string, string>;
+  actions?: Array<{ type: string; label: string; locator?: LocatorCall[]; value?: string; url?: string; ms?: number }>;
+  viewport?: { width: number; height: number };
+}
+
+const NEEDS_LOCATOR = new Set(['click', 'dblclick', 'hover', 'fill', 'check', 'uncheck', 'select']);
+
+/**
+ * Validate page-state inputs: the storageState file must sit inside the
+ * project root (symlinks resolved) and parse as JSON, every goto URL passes
+ * the same URL policy as the entry URL, and locators are parsed into
+ * whitelisted call chains (never evaluated as code).
+ */
+export async function resolvePageState(
+  input: PageStateInput,
+  root: string,
+  entryUrl: string,
+  ctx: ToolContext,
+): Promise<ResolvedPageState> {
+  const out: ResolvedPageState = {};
+  const statePath = input.storageState ?? (process.env.PW_MCP_STORAGE_STATE || undefined);
+  if (statePath !== undefined && statePath.trim() !== '') {
+    if (ctx.restricted) {
+      throw new PlaywrightMcpError('storageState is not available on this server', 'INVALID_PATH', {
+        hint: 'This endpoint does not read files from the project.',
+      });
+    }
+    const absolute = sanitizeUserPath(statePath.trim(), root);
+    await assertRealPathInside(absolute, root);
+    let raw: string;
+    try {
+      raw = await readFile(absolute, 'utf8');
+    } catch {
+      throw new PlaywrightMcpError(`storageState file not found: ${relativeToRoot(root, absolute)}`, 'INVALID_PATH', {
+        hint: 'Create it with a Playwright setup project (await page.context().storageState({ path })) or `npx playwright codegen --save-storage=playwright/.auth/user.json <url>`.',
+      });
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+    } catch {
+      throw new PlaywrightMcpError(`storageState is not valid JSON: ${relativeToRoot(root, absolute)}`, 'INVALID_PATH', {
+        hint: 'Pass the JSON file Playwright writes with context.storageState({ path }).',
+      });
+    }
+    out.storageState = toNativePath(absolute);
+  }
+  if (input.headers && Object.keys(input.headers).length > 0) {
+    for (const [name, value] of Object.entries(input.headers)) {
+      if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) || /[\r\n]/.test(value)) {
+        throw new PlaywrightMcpError(`Invalid HTTP header "${name}"`, 'INVALID_PATH', {
+          hint: 'Header names must be tokens and values must be single-line.',
+        });
+      }
+    }
+    out.headers = input.headers;
+  }
+  if (input.viewport) out.viewport = input.viewport;
+  if (input.actions && input.actions.length > 0) {
+    out.actions = [];
+    let current = entryUrl;
+    for (const [i, action] of input.actions.entries()) {
+      const step = `actions[${i}] (${action.type})`;
+      if (action.type === 'goto') {
+        if (!action.url) throw new PlaywrightMcpError(`${step} needs a url`, 'INVALID_PATH');
+        let next: string;
+        try {
+          next = new URL(action.url, current).toString();
+        } catch {
+          throw new PlaywrightMcpError(`${step}: "${action.url}" is not a valid URL`, 'INVALID_PATH');
+        }
+        assertHttpUrl(next);
+        await assertUrlAllowed(next);
+        current = next;
+        out.actions.push({ type: 'goto', label: `goto ${next}`, url: next });
+        continue;
+      }
+      if (NEEDS_LOCATOR.has(action.type) && !action.locator) {
+        throw new PlaywrightMcpError(`${step} needs a locator`, 'INVALID_PATH');
+      }
+      if ((action.type === 'press' || action.type === 'select') && action.value === undefined) {
+        throw new PlaywrightMcpError(`${step} needs a value`, 'INVALID_PATH');
+      }
+      const locator = action.locator ? parseLocator(action.locator) : undefined;
+      out.actions.push({
+        type: action.type,
+        label: `${action.type}${locator ? ` ${formatLocator(locator)}` : ''}${action.type === 'press' ? ` ${action.value}` : ''}`,
+        locator,
+        value: action.value,
+        ms: action.ms,
+      });
+    }
+  }
+  return out;
+}
+
+/** One line describing the page state, for tool output headers. */
+export function describePageState(state: ResolvedPageState, root: string): string | undefined {
+  const parts: string[] = [];
+  if (state.storageState) parts.push(`session \`${relativeToRoot(root, state.storageState)}\``);
+  if (state.headers) parts.push(`${Object.keys(state.headers).length} extra header(s)`);
+  if (state.actions?.length) parts.push(`${state.actions.length} step(s) run first`);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+/** A hint when an unauthenticated page landed on a login screen. */
+export function loginHint(finalUrl: string | undefined, state: ResolvedPageState): string | undefined {
+  if (state.storageState || !finalUrl) return undefined;
+  if (!/(log-?in|sign-?in|auth|sso|oauth)/i.test(new URL(finalUrl).pathname)) return undefined;
+  return 'This looks like a login page. Pass `storageState` (a Playwright session file such as playwright/.auth/user.json) to inspect the page as a signed-in user, or `actions` to log in first.';
+}
+
+/* ------------------------------------------------------------------ */
+/* Browser child script                                                */
+/* ------------------------------------------------------------------ */
+
+export interface BrowserScriptConfig extends Omit<ResolvedPageState, never> {
+  mode: 'inspect' | 'validate' | 'screenshot' | 'heal';
   projectRoot: string;
-  url: string;
+  /** Page to open; omitted when rendering a snapshot. */
+  url?: string;
+  /** Render this DOM snapshot file instead of navigating (all requests blocked). */
+  snapshotHtmlPath?: string;
+  /** CSS selector for inspect mode. */
   selector?: string;
+  /** Parsed locator chain for validate / screenshot modes. */
+  selectorChain?: LocatorCall[];
+  /** inspect: 'elements' (DOM inventory) or 'locators' (compact locator map). */
+  view?: 'elements' | 'locators';
+  /** heal: words from the broken locator, and its role when it had one. */
+  healTokens?: string[];
+  healRole?: string;
   waitFor?: string;
   waitUntil?: 'load' | 'domcontentloaded' | 'networkidle';
   includeHtml?: boolean;
   maxHtmlChars?: number;
   gotoTimeout?: number;
   waitTimeout?: number;
+  actionTimeout?: number;
   /** Screenshot target path (mode: 'screenshot'). */
   screenshotPath?: string;
   /** Capture the full scrollable page (mode: 'screenshot'). */
@@ -612,11 +494,21 @@ export interface BrowserScriptData {
   viewport?: { width: number; height: number };
   parseError?: string;
   consoleMessages?: import('../types/index.js').ConsoleMessageInfo[];
+  /** Page actions that completed before inspection. */
+  actionsDone?: string[];
   durationMs?: number;
+}
+
+/** Best verified locator for an element, as source text. */
+export function bestLocator(element: import('../types/index.js').ElementInfo): string | undefined {
+  const chain = element.locators?.[0];
+  return chain ? formatLocator(chain) : undefined;
 }
 
 export interface BrowserScriptOutcome {
   ok: boolean;
+  /** Page actions that completed before a failure. */
+  actionsDone?: string[];
   data?: BrowserScriptData;
   kind?: ErrorKind;
   error?: string;
@@ -633,12 +525,20 @@ export async function runBrowserScript(
   options: { timeoutMs?: number; signal?: AbortSignal },
 ): Promise<BrowserScriptOutcome> {
   const scriptPath = tempFilePath('pw-mcp-probe', '.cjs');
+  const configPath = tempFilePath('pw-mcp-probe', '.json');
   await writeFile(scriptPath, PROBE_SCRIPT, 'utf8');
+  // The config travels in a file: actions and snapshot paths can outgrow
+  // the Windows command-line limit.
+  await writeFile(
+    configPath,
+    JSON.stringify({ ...config, blockPrivate: blockPrivateUrls(), blockedRanges: BLOCKED_RANGES }),
+    'utf8',
+  );
 
   try {
     const outcome = await runProcess(
       process.execPath,
-      [scriptPath, JSON.stringify({ ...config, blockPrivate: blockPrivateUrls(), blockedRanges: BLOCKED_RANGES })],
+      [scriptPath, configPath],
       {
         cwd: config.projectRoot,
         env: childEnv({ FORCE_COLOR: '0' }),
@@ -664,13 +564,14 @@ export async function runBrowserScript(
       try {
         const parsed = JSON.parse(json) as
           | { ok: true; data: BrowserScriptData }
-          | { ok: false; kind?: ErrorKind; error?: string; hint?: string };
+          | { ok: false; kind?: ErrorKind; error?: string; hint?: string; actionsDone?: string[] };
         if (parsed.ok) return { ok: true, data: parsed.data };
         return {
           ok: false,
           kind: parsed.kind ?? 'UNKNOWN',
           error: parsed.error ?? 'Inspection failed.',
           hint: parsed.hint,
+          actionsDone: parsed.actionsDone,
           stderrTail: tailText(outcome.stderr),
         };
       } catch {
@@ -696,6 +597,7 @@ export async function runBrowserScript(
     };
   } finally {
     await rm(scriptPath, { force: true }).catch(() => undefined);
+    await rm(configPath, { force: true }).catch(() => undefined);
   }
 }
 

@@ -1,21 +1,31 @@
 /**
  * Tool 3 — inspect-page: launch a headless browser against a live URL
- * and return the rendered DOM: element inventory with unique CSS
- * selectors, visibility, boxes, text and attributes, optional HTML and
- * captured console messages.
+ * and return the rendered DOM: element inventory with verified Playwright
+ * locators (role + name first) and unique CSS selectors, visibility, boxes,
+ * text and attributes, optional HTML and captured console messages.
+ *
+ * The page can be opened as a signed-in user (storageState / headers) and
+ * driven to a state first (actions), so modals, multi-step flows and pages
+ * behind a login can be inspected.
  */
 
 import { z } from 'zod';
 import type { ElementInfo, ToolContext, ToolResponse } from '../types/index.js';
 import {
   assertHttpUrl,
+  bestLocator,
   clipLines,
+  describePageState,
   guard,
+  loginHint,
+  pageStateShape,
+  resolvePageState,
   resolveProjectRoot,
   runBrowserScript,
   toolError,
   toolText,
 } from './shared.js';
+import { formatLocator } from '../utils/locator-expr.js';
 import { assertUrlAllowed } from '../utils/url-policy.js';
 
 const inspectPageInput = z.object({
@@ -23,15 +33,20 @@ const inspectPageInput = z.object({
   projectRoot: z
     .string()
     .optional()
-    .describe('Project whose Playwright install launches the browser; defaults to the server working directory'),
+    .describe('Project whose Playwright launches the browser (default: server root)'),
   selector: z
     .string()
     .optional()
     .describe('CSS selector: inspect matches instead of the whole DOM'),
+  view: z
+    .enum(['elements', 'locators'])
+    .optional()
+    .describe("'locators': compact map of interactive elements (cheapest); 'elements' (default): DOM inventory"),
   waitFor: z
     .string()
     .optional()
-    .describe('Wait for this selector (CSS or "text=...") to appear before inspecting'),
+    .describe('Wait for this selector first'),
+  ...pageStateShape,
   waitUntil: z
     .enum(['load', 'domcontentloaded', 'networkidle'])
     .optional()
@@ -50,6 +65,13 @@ const inspectPageInput = z.object({
 export type InspectPageInput = z.infer<typeof inspectPageInput>;
 export const inspectPageSchema = inspectPageInput;
 
+function renderLocatorLine(element: ElementInfo, position: number): string {
+  const best = bestLocator(element);
+  const alt = (element.locators ?? []).slice(1).map((chain) => `\`${formatLocator(chain)}\``);
+  const label = element.role ? `${element.role}${element.name ? ` "${clipLines(element.name, 1, 60)}"` : ''}` : element.tag;
+  return `${position}. \`${best ?? element.selector}\` — ${label}${alt.length > 0 ? ` · also ${alt.join(', ')}` : ''}`;
+}
+
 function renderElement(element: ElementInfo, position: number): string {
   const visibility = element.visible ? 'visible' : 'hidden';
   const box = element.box
@@ -58,6 +80,8 @@ function renderElement(element: ElementInfo, position: number): string {
   const lines = [
     `${position}. \`${element.selector}\` — **${element.tag}** · ${visibility} · ${box}`,
   ];
+  const best = bestLocator(element);
+  if (best && !best.startsWith('locator(')) lines.push(`   locator: \`${best}\``);
   if (element.text) lines.push(`   text: "${element.text}"`);
   const attrs = Object.entries(element.attributes).filter(
     ([name]) => name !== 'class' && name !== 'id',
@@ -74,20 +98,24 @@ function renderElement(element: ElementInfo, position: number): string {
 export const inspectPageTool = {
   name: 'inspect-page',
   description:
-    'Open a URL in a headless browser and return the rendered DOM: elements with unique CSS selectors, visibility, bounding boxes, text, attributes, captured console messages and optional HTML. Use this to understand a live page before writing or fixing selectors/tests. Requires a reachable URL (detects a missing dev server).',
+    "Open a URL headlessly and return its elements with Playwright locators proven unique on the page (role + name first), CSS selectors, visibility, text and console messages. storageState/headers open it signed in; actions click/fill first to reach a state. view 'locators' is the compact map.",
   inputSchema: inspectPageSchema,
   handler: async (args: InspectPageInput, ctx: ToolContext): Promise<ToolResponse> =>
     guard('inspect-page', async () => {
       const url = assertHttpUrl(args.url);
       await assertUrlAllowed(url);
       const root = await resolveProjectRoot(args.projectRoot, ctx);
+      const state = await resolvePageState(args, root, url, ctx);
       const timeoutMs = args.timeoutMs ?? 45_000;
+      const view = args.selector ? 'elements' : (args.view ?? 'elements');
 
       const outcome = await runBrowserScript(
         {
+          ...state,
           mode: 'inspect',
           projectRoot: root,
           url,
+          view,
           selector: args.selector,
           waitFor: args.waitFor,
           waitUntil: args.waitUntil,
@@ -101,9 +129,10 @@ export const inspectPageTool = {
       );
 
       if (!outcome.ok) {
+        const done = outcome.actionsDone?.length ? `\n\nSteps completed before the failure: ${outcome.actionsDone.join('; ')}` : '';
         return toolError(
           outcome.kind ?? 'UNKNOWN',
-          `Could not inspect ${url}: ${outcome.error ?? 'unknown error'}`,
+          `Could not inspect ${url}: ${outcome.error ?? 'unknown error'}${done}`,
           outcome.hint,
           outcome.stderrTail,
         );
@@ -124,15 +153,25 @@ export const inspectPageTool = {
       lines.push(
         `**URL:** ${url}${data.finalUrl && data.finalUrl !== url ? ` → ${data.finalUrl}` : ''}  ` ,
         `**Elements:** ${data.elementCount}  |  **Viewport:** ${data.viewport ? `${data.viewport.width}×${data.viewport.height}` : '—'}  |  **Took:** ${data.durationMs ?? 0}ms`,
-        '',
       );
+      const stateLine = describePageState(state, root);
+      if (stateLine) lines.push(`**Page state:** ${stateLine}`);
+      if (data.actionsDone?.length) lines.push(`**Steps run:** ${data.actionsDone.join('; ')}`);
+      lines.push('');
+      const login = loginHint(data.finalUrl, state);
+      if (login) lines.push(`> 🔒 ${login}`, '');
 
       const heading = args.selector
         ? `### Matches for \`${args.selector}\` (${data.matchCount})`
-        : `### DOM sample (first ${data.elements.length} of ${data.elementCount} elements)`;
+        : view === 'locators'
+          ? `### Locator map (${data.elements.length} of ${data.matchCount} visible interactive elements, locators verified unique)`
+          : `### DOM sample (first ${data.elements.length} of ${data.elementCount} elements)`;
       lines.push(heading, '');
       if (data.elements.length === 0) {
         lines.push('_No elements matched._', '');
+      } else if (view === 'locators') {
+        for (let i = 0; i < data.elements.length; i += 1) lines.push(renderLocatorLine(data.elements[i], i + 1));
+        lines.push('');
       } else {
         for (let i = 0; i < data.elements.length; i += 1) {
           lines.push(renderElement(data.elements[i], i + 1), '');

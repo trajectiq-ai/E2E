@@ -14,8 +14,9 @@ and concrete next steps.
 ## Before you start
 
 1. Check that the server's tools are available. They are named `run-test`,
-   `get-failure`, `inspect-page`, `validate-selector`, `list-tests`,
-   `generate-e2e-test`, `compare-visual-state` and `diagnose-flaky` (your client
+   `get-run-status`, `get-failure`, `suggest-fix`, `inspect-page`,
+   `validate-selector`, `list-tests`, `generate-e2e-test`,
+   `compare-visual-state`, `diagnose-flaky` and `analyze-history` (your client
    may prefix them, e.g. `mcp__playwright-e2e__run-test`).
 2. If they are missing, stop and tell the user the MCP server is not connected.
    Point them to `references/setup.md` for the one-line install for their client.
@@ -32,7 +33,8 @@ Follow these steps in order. Do not edit code before step 3.
    `{ "testFiles": ["tests/checkout.spec.ts"] }`, or `file:line`, or `grep`.
    Omit `testFiles` only when the user asks for the whole suite. Failing tests are
    retried once by default, so a test that passes on retry is reported as
-   **flaky**, not failed.
+   **flaky**, not failed. For a long suite pass `background: true` and poll
+   `get-run-status` with `waitSeconds: 30`.
 2. **Read the failure.** For each failure, call `get-failure` with its 1-based
    `index`. Read the message and code frame, expected vs actual, the failure kind,
    the DOM snapshot at failure, the failed action and its selector, failed network
@@ -42,8 +44,11 @@ Follow these steps in order. Do not edit code before step 3.
    - `server-unreachable` / `SERVER_NOT_RUNNING`: the app is not running. Tell the
      user to start the dev server, or suggest `webServer` in the Playwright config.
      Do not edit tests.
-   - A locator or selector in the message, or "0 elements": go to the selector
-     loop below.
+   - A locator or selector in the message, or "0 elements": call `suggest-fix`
+     with the same `index`. If it returns a diff with `high` confidence, call it
+     again with `apply: true`; it re-runs the test and reverts if still red. If it
+     says the element is missing, treat it as an app bug and report the evidence.
+     Otherwise go to the selector loop below.
    - `assertion` with a sensible selector: compare expected vs actual and the DOM
      snapshot. Decide whether the app regressed or the test expectation is stale,
      and say which before changing anything.
@@ -57,23 +62,25 @@ Follow these steps in order. Do not edit code before step 3.
 
 ## Selector loop: a locator no longer matches
 
-1. `inspect-page` with the page URL (e.g. `{ "url": "http://localhost:3000/checkout" }`).
-   Add `selector` to focus on a region, or `waitFor` if the content loads late.
-   It returns each element's unique CSS selector, visibility, box, text and
-   attributes.
-2. Pick a replacement. Prefer, in order: `data-testid`, role + accessible name
-   (`getByRole`), label/placeholder, then a short stable CSS selector. Avoid
+1. `inspect-page` with the page URL and `view: "locators"`
+   (e.g. `{ "url": "http://localhost:3000/checkout", "view": "locators" }`).
+   Behind a login, pass `storageState` (the project's saved auth file); to reach a
+   modal or later step, pass `actions`. Every locator listed was checked to match
+   exactly one element.
+2. Pick a replacement. Prefer, in order: role + accessible name (`getByRole`),
+   `getByTestId`, label/placeholder, then a short stable CSS selector. Avoid
    positional selectors such as `:nth-child` and generated class names.
 3. `validate-selector` with `{ "url": ..., "selector": ... }` before editing the
-   spec. Only use a selector that comes back `✅ VALID` with the expected match
-   count (usually exactly 1). `validate-selector` checks plain CSS; for
-   Playwright-only syntax (`text=`, `>>`, `:has-text()`, `getByRole`) validate the
-   CSS equivalent or confirm with a re-run.
+   spec. It accepts locator expressions as written in the spec. Only use one that
+   comes back `✅ VALID` with exactly 1 match.
 4. Update the spec and re-run with `lastFailed: true`.
 
 ## Flaky or intermittent failures
 
-Call `diagnose-flaky` (optionally `{ "testFiles": [...], "runs": 5 }`; with no
+Start with `analyze-history` (default view `flaky`) to see which tests flip
+between pass and fail across recorded runs, which regressed, and which are simply
+broken; `view: "patterns"` groups failures that share a cause. Then call
+`diagnose-flaky` on the worst one (optionally `{ "testFiles": [...], "runs": 5 }`; with no
 `testFiles` it takes the tests that failed in the last run). It runs with retries
 disabled and returns one verdict:
 

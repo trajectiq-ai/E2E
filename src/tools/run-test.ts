@@ -9,6 +9,8 @@ import type { RunTestOptions, RunTestResult, ToolContext, ToolResponse } from '.
 import { detectProject, missingPlaywrightMessage } from '../utils/project-detector.js';
 import { runTests } from '../utils/playwright-runner.js';
 import { normalizePath, relativeToRoot } from '../utils/path-utils.js';
+import { recordRun } from '../utils/run-history.js';
+import { startBackgroundRun } from '../utils/run-registry.js';
 import {
   codeFence,
   clipLines,
@@ -72,12 +74,16 @@ const runTestInput = z.object({
     .array(z.string())
     .optional()
     .describe('Extra Playwright flags from an allowlist, as --flag or --flag=value (e.g. --repeat-each=3, --shard=1/2, --trace=on)'),
+  background: z
+    .boolean()
+    .optional()
+    .describe('Return a run id at once; poll get-run-status'),
 });
 
 export type RunTestInput = z.infer<typeof runTestInput>;
 export const runTestSchema = runTestInput;
 
-function renderRunResult(result: RunTestResult, root: string): string {
+export function renderRunResult(result: RunTestResult, root: string): string {
   const flakyCount = result.stats?.flaky ?? 0;
   const status = result.ok
     ? flakyCount > 0
@@ -154,7 +160,7 @@ function renderRunResult(result: RunTestResult, root: string): string {
 export const runTestTool = {
   name: 'run-test',
   description:
-    'Run Playwright end-to-end tests in the user\'s project and return structured results: pass/fail stats, per-failure messages with file:line, and diagnostics. Detects missing Playwright installs, multiple configs, dead dev servers, syntax errors, browser crashes, timeouts (kills the process tree and returns partial results) and full disks.',
+    'Run the project\'s Playwright tests: stats plus each failure\'s file:line, kind and message. Diagnoses missing installs, dead dev servers, syntax errors, crashes and timeouts (kills the tree, keeps partial results). Reports progress; background: true returns a run id for long suites. Runs are recorded for analyze-history.',
   inputSchema: runTestSchema,
   handler: async (args: RunTestInput, ctx: ToolContext): Promise<ToolResponse> =>
     guard('run-test', async () => {
@@ -198,8 +204,32 @@ export const runTestTool = {
         signal: ctx.signal,
       };
 
-      const result = await runTests(options);
+      if (args.background) {
+        const { signal: _signal, ...rest } = options;
+        const label = sanitized.length > 0 ? sanitized.map((f) => relativeToRoot(root, f)).join(', ') : 'whole suite';
+        const run = startBackgroundRun(rest, label, async (result) => {
+          ctx.store.setLastRun({ projectRoot: root, result, at: Date.now() });
+          await recordRun(root, result, 'run-test');
+        });
+        return toolText(
+          [
+            `## ▶️ Run started in the background — \`${run.id}\``,
+            '',
+            `**Tests:** ${label}`,
+            '',
+            `> Next: call **get-run-status** with \`runId: "${run.id}"\` (add \`waitSeconds\` to wait for it). The result also becomes the last run for **get-failure** and **suggest-fix** when it finishes.`,
+          ].join('\n'),
+        );
+      }
+
+      const result = await runTests({
+        ...options,
+        onProgress: ctx.progress
+          ? (p) => ctx.progress?.(p.done, p.total, `${p.done}${p.total ? `/${p.total}` : ''} tests done${p.failed ? `, ${p.failed} failed` : ''}${p.last ? ` · ${p.last}` : ''}`)
+          : undefined,
+      });
       ctx.store.setLastRun({ projectRoot: root, result, at: Date.now() });
+      await recordRun(root, result, 'run-test').catch((err) => ctx.logger.warn('could not record run history', { error: err }));
       ctx.logger.info('run-test finished', {
         ok: result.ok,
         exitCode: result.exitCode,

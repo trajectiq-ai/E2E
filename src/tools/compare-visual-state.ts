@@ -18,12 +18,15 @@ import { diagnoseOutput } from '../utils/report-parser.js';
 import {
   assertHttpUrl,
   guard,
+  pageStateShape,
+  resolvePageState,
   resolveProjectRoot,
   runBrowserScript,
   toolError,
   toolText,
 } from './shared.js';
 import { assertUrlAllowed } from '../utils/url-policy.js';
+import { parseLocator } from '../utils/locator-expr.js';
 
 const compareInput = z.object({
   url: z.string().describe('Full URL of the page (or element target) to capture'),
@@ -34,10 +37,14 @@ const compareInput = z.object({
     .regex(/^[A-Za-z0-9._-]+$/, 'letters, digits, dot, underscore, dash only')
     .describe('Baseline id, e.g. "checkout-page" or "submit-button"'),
   projectRoot: z.string().optional().describe('Project directory; defaults to the server working directory'),
-  selector: z.string().optional().describe('Capture only this element instead of the whole page'),
+  selector: z
+    .string()
+    .optional()
+    .describe('Capture only this element (selector or locator)'),
   fullPage: z.boolean().optional().describe('Capture the full scrollable page (default false)'),
   waitUntil: z.enum(['load', 'domcontentloaded', 'networkidle']).optional(),
   waitFor: z.string().optional().describe('Wait for this selector before capturing'),
+  ...pageStateShape,
   timeoutMs: z.number().int().min(1_000).max(300_000).optional(),
   action: z
     .enum(['compare', 'baseline'])
@@ -131,6 +138,7 @@ export const compareVisualStateTool = {
       const root = await resolveProjectRoot(args.projectRoot, ctx);
       const url = assertHttpUrl(args.url);
       await assertUrlAllowed(url);
+      const state = await resolvePageState(args, root, url, ctx);
       const tolerance = args.tolerance ?? 0.1;
       const timeoutMs = args.timeoutMs ?? 45_000;
 
@@ -145,10 +153,11 @@ export const compareVisualStateTool = {
       try {
         const outcome = await runBrowserScript(
           {
+            ...state,
             mode: 'screenshot',
             projectRoot: root,
             url,
-            selector: args.selector,
+            selectorChain: args.selector ? parseLocator(args.selector) : undefined,
             waitFor: args.waitFor,
             waitUntil: args.waitUntil,
             includeHtml: false,

@@ -2,7 +2,7 @@
 // terminal-style cards:
 //
 //   demo-endpoint.png  — an illustration of initialize + tools/list for a
-//                        client that sends the bearer token (all 8 tools).
+//                        client that sends the bearer token (all 11 tools).
 //                        The text is written here, not captured; without a
 //                        token the endpoint lists only list-tests and get-failure.
 //   demo-run-test.png  — a real `run-test` call served over stdio by
@@ -23,14 +23,17 @@ const outDir = join(root, 'docs');
 mkdirSync(outDir, { recursive: true });
 
 const TOOLS = [
-  ['run-test', 'Run Playwright E2E tests, return structured pass/fail results and diagnostics'],
-  ['get-failure', 'Full failure message, code frame, expected vs actual, network + console errors, next steps'],
-  ['inspect-page', 'Open a URL headlessly and return the rendered DOM with unique CSS selectors'],
+  ['run-test', 'Run Playwright tests: stats, failures with file:line and kind; background runs with progress'],
+  ['get-run-status', 'Progress or final result of a background run; wait or cancel'],
+  ['get-failure', 'Failure message, code frame, DOM at failure, network + console errors, next steps'],
+  ['suggest-fix', 'Patch a drifted locator or changed copy, apply it and verify with a re-run'],
+  ['inspect-page', 'Open a URL (signed in, after steps) and return verified Playwright locators'],
   ['list-tests', 'List the Playwright tests available in the project (file, line, title, projects)'],
-  ['validate-selector', 'Check a CSS selector against a live page: syntax, match count, sample elements'],
+  ['validate-selector', 'Check a selector or locator on a live page: match count, sturdier locator'],
   ['generate-e2e-test', 'Scaffold a Playwright test from a description using the project’s REAL selectors'],
   ['compare-visual-state', 'Pixel-level visual diff against a stored baseline: where and how much changed'],
   ['diagnose-flaky', 'Evidence-based verdict: CONSISTENTLY FAILING · FLAKY · NOT REPRODUCING'],
+  ['analyze-history', 'Rank flaky, regressed and broken tests across runs; group failures by cause'],
 ];
 
 const RUN_RESPONSE = `## Playwright run — ✅ PASSED
@@ -94,7 +97,7 @@ const endpointHtml = page({
   },
   response: `{"result":{"serverInfo":{"name":"<span class="b">playwright-e2e-mcp</span>","version":"<span class="b">0.1.4</span>"},"capabilities":{"tools":{"listChanged":true}}}}
 
-<span class="h">8 tools:</span>
+<span class="h">11 tools:</span>
 ${TOOLS.map(([n, d]) => `<div class="tool"><span class="n">${n}</span><span class="d">${esc(d)}</span></div>`).join('\n')}`,
 });
 

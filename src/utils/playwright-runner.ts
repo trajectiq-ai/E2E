@@ -19,6 +19,7 @@ import type {
   ErrorKind,
   ListTestsOptions,
   ListTestsResult,
+  RunProgress,
   RunTestOptions,
   RunTestResult,
 } from '../types/index.js';
@@ -122,6 +123,40 @@ export interface RunProcessOptions {
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
   signal?: AbortSignal;
+  /** Called with each stdout chunk as it arrives. */
+  onStdout?: (chunk: string) => void;
+}
+
+/**
+ * Turn Playwright `list` reporter output into progress. Each finished test
+ * prints one line starting with a status mark (✓ ✘ - or ok/x on terminals
+ * without UTF-8) and its ordinal; "Running N tests" gives the total.
+ */
+export function createProgressParser(onProgress: (progress: RunProgress) => void): (chunk: string) => void {
+  let buffer = '';
+  const state: RunProgress = { done: 0, failed: 0 };
+  return (chunk: string) => {
+    buffer += chunk;
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? '';
+    let changed = false;
+    for (const raw of lines) {
+      const line = raw.replace(/\u001b\[[0-9;]*m/g, '');
+      const total = /^\s*Running (\d+) tests?\b/.exec(line);
+      if (total) {
+        state.total = Number(total[1]);
+        changed = true;
+        continue;
+      }
+      const done = /^\s*(✓|✘|ok|x|-|°)\s+(\d+)\s+(.*?)(?:\s+\(\d[\d.]*m?s\))?\s*$/.exec(line);
+      if (!done) continue;
+      state.done = Math.max(state.done, Number(done[2]));
+      if (done[1] === '✘' || done[1] === 'x') state.failed += 1;
+      state.last = done[3].slice(0, 200);
+      changed = true;
+    }
+    if (changed) onProgress({ ...state });
+  };
 }
 
 export interface ProcessOutcome {
@@ -251,7 +286,16 @@ export function runProcess(command: string, args: string[], options: RunProcessO
 
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => push(stdoutChunks, chunk));
+    child.stdout?.on('data', (chunk: string) => {
+      push(stdoutChunks, chunk);
+      if (options.onStdout) {
+        try {
+          options.onStdout(chunk);
+        } catch {
+          /* a progress listener must never break the run */
+        }
+      }
+    });
     child.stderr?.on('data', (chunk: string) => push(stderrChunks, chunk));
 
     const onAbort = (): void => {
@@ -537,7 +581,12 @@ export async function runTests(options: RunTestOptions): Promise<RunTestResult> 
   }
   if (options.grep) args.push(`--grep=${sanitizeGrep(options.grep)}`);
   if (options.lastFailed) args.push('--last-failed');
-  if (project) args.push(`--project=${project}`);
+  if (options.project !== undefined) {
+    if (!/^[^-\x00-\x1f\x7f][^\x00-\x1f\x7f]{0,99}$/.test(options.project)) {
+      throw new PlaywrightMcpError(`Invalid project name "${options.project}"`, 'INVALID_PATH');
+    }
+    args.push(`--project=${options.project}`);
+  } else if (project) args.push(`--project=${project}`);
   if (options.headed) args.push('--headed');
   const workers = clampInt(options.workers, 1, 64);
   if (workers !== undefined) args.push(`--workers=${workers}`);
@@ -555,7 +604,8 @@ export async function runTests(options: RunTestOptions): Promise<RunTestResult> 
   if (args.some((arg) => arg.startsWith('--reporter'))) {
     throw new PlaywrightMcpError('Caller arguments may not set --reporter', 'INVALID_PATH');
   }
-  args.push('--reporter=json');
+  // The list reporter only feeds live progress; results always come from JSON.
+  args.push(options.onProgress ? '--reporter=json,list' : '--reporter=json');
 
   const env = childEnv({
     PLAYWRIGHT_JSON_OUTPUT_NAME: reportPath,
@@ -572,6 +622,7 @@ export async function runTests(options: RunTestOptions): Promise<RunTestResult> 
     env,
     timeoutMs,
     signal: options.signal,
+    onStdout: options.onProgress ? createProgressParser(options.onProgress) : undefined,
   });
 
   const durationMs = Date.now() - startedAt;
@@ -585,13 +636,16 @@ export async function runTests(options: RunTestOptions): Promise<RunTestResult> 
         failures: [],
         failuresTruncated: false,
         tests: [],
+        outcomes: [],
         specCount: 0,
         projects: [],
         configPath: null,
         parseError: 'No JSON report was produced.',
       };
 
-  const combined = `${outcome.stderr}\n${outcome.stdout}`;
+  // With the list reporter on, stdout holds every test's error text; only
+  // stderr then speaks for the run as a whole.
+  const combined = options.onProgress ? outcome.stderr : `${outcome.stderr}\n${outcome.stdout}`;
   const diagnosis = diagnoseOutput(combined);
 
   let errorKind: ErrorKind | undefined;
@@ -642,6 +696,7 @@ export async function runTests(options: RunTestOptions): Promise<RunTestResult> 
     killed: outcome.timedOut || outcome.aborted,
     partial,
     stats: parsed.stats,
+    outcomes: parsed.outcomes,
     failures: parsed.failures,
     failuresTruncated: parsed.failuresTruncated,
     stdoutTail: tail(outcome.stdout),

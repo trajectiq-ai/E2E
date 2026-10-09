@@ -685,6 +685,7 @@ npm test        # build + test/run-tests.mjs (unit tests, any Node ≥20)
 npm run e2e     # build + e2e/run.mjs: live MCP ↔ Playwright integration suite
 npm run mcpb    # build + bundle dist/ into playwright-e2e-mcp-<version>.mcpb (+ .sha256)
 npm run mcpb:smoke   # ...then install that bundle in a temp dir, launch it and assert the handshake
+npm run mcpb:sign    # ...then sign it with MCPB_CERT/MCPB_KEY → <version>.signed.mcpb
 ```
 
 Tests cover the report parser (sample Playwright JSON, trace attachments), path utils
@@ -724,6 +725,51 @@ that only appear end-to-end:
 
 First run needs the browser once: `npx playwright install chromium`.
 CI runs the suite on Ubuntu and Windows (see `.github/workflows/ci.yml`).
+
+### Signing the bundle
+
+```bash
+MCPB_CERT=~/signing/cert.pem MCPB_KEY=~/signing/key.pem npm run mcpb:sign
+```
+
+Signing appends a PKCS#7 signature block to the bundle, so the signed file is
+*the reproducible bundle plus that block*. That ordering is the point: the bytes
+CI proved identical across platforms stay inside the signed file, and
+`mcpb unsign` returns them exactly. `scripts/sign-mcpb.mjs` asserts that round
+trip on every run and deletes its output if it fails, which is what keeps
+`<version>.signed.mcpb` tied to `<version>.mcpb`.
+
+The private key is read from a path you pass in (`--cert`/`--key` or
+`MCPB_CERT`/`MCPB_KEY`) and never from the repository — keep it outside version
+control, and back it up: the same key across releases is what makes the signer
+recognisable.
+
+What signing does and does not buy you is decided by the certificate, not by
+this script. `mcpb verify` and `mcpb info` accept a signature only when the
+certificate chains to something in the OS trust store, so with a self-signed
+certificate a host still reports **Not signed** — the signature is real
+integrity and key continuity, verifiable by the fingerprint the script prints,
+but not third-party identity. A certificate issued by a public CA, or an
+internal one installed on your machines, is what makes hosts report it as
+signed.
+
+### Verifying a published release
+
+```bash
+git checkout v0.2.1 && npm ci && npm run mcpb
+npm run release:verify -- v0.2.1
+```
+
+The release notes promise that the tag rebuilds the published bundle byte for
+byte. `scripts/verify-release.mjs` checks that promise from a checkout of the
+tag: the published bundle against your fresh build, every checksum the release
+publishes (and that nothing shippable is missing from `SHA256SUMS.txt`), a
+**signed** bundle against the bytes its signature wraps, and that the published
+archive still extracts with that version's manifest.
+`.github/workflows/verify-release.yml` runs it on every published release and on
+demand for any past tag. The `.tgz` is checked for download integrity only: npm
+records the packer's line endings, so a tarball packed locally on another OS is
+legitimately different.
 
 ### Try the example
 

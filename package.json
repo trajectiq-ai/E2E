@@ -1,7 +1,7 @@
 {
   "name": "playwright-e2e-mcp",
-  "version": "0.1.4",
-  "description": "MCP server that runs, debugs, and inspects Playwright end-to-end tests from any MCP client",
+  "version": "0.2.0",
+  "description": "MCP server that runs, diagnoses and fixes failing Playwright end-to-end tests: trace analysis, verified locator fixes, flaky ranking",
   "author": "trajectiq-ai <trajectiq@gmail.com>",
   "mcpName": "io.github.trajectiq-ai/E2E",
   "type": "module",

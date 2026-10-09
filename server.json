@@ -3,7 +3,7 @@
   "name": "io.github.trajectiq-ai/E2E",
   "title": "Playwright E2E MCP",
   "description": "Diagnose and fix failing Playwright tests: trace analysis, verified locator fixes, flaky ranking.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "websiteUrl": "https://github.com/trajectiq-ai/E2E#readme",
   "repository": {
     "source": "github",
@@ -14,7 +14,7 @@
     {
       "registryType": "npm",
       "identifier": "playwright-e2e-mcp",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "transport": {
         "type": "stdio"
       }

@@ -133,6 +133,11 @@ export interface ToolContext {
    * or run project code, and callers may not pick another project root.
    */
   restricted?: boolean;
+  /**
+   * Report progress to the client (MCP notifications/progress), when it
+   * asked for it with a progress token.
+   */
+  progress?: (progress: number, total?: number, message?: string) => void;
 }
 
 /**
@@ -260,6 +265,8 @@ export interface RunTestOptions {
   /** Playwright --grep expression. */
   grep?: string;
   browser?: BrowserName;
+  /** Exact Playwright project name (e.g. the project a failure ran in); wins over `browser`. */
+  project?: string;
   headed?: boolean;
   /** Hard wall-clock limit for the whole run; process group is killed. */
   timeoutMs?: number;
@@ -282,6 +289,17 @@ export interface RunTestOptions {
   lastFailed?: boolean;
   /** Abort when the MCP client disconnects. */
   signal?: AbortSignal;
+  /** Called with Playwright's line-reporter progress while the run is going. */
+  onProgress?: (progress: RunProgress) => void;
+}
+
+/** Live progress of a run, parsed from the line reporter. */
+export interface RunProgress {
+  done: number;
+  total?: number;
+  failed: number;
+  /** Title of the most recently finished test. */
+  last?: string;
 }
 
 export type TestStatus = 'passed' | 'failed' | 'timedOut' | 'skipped' | 'flaky' | 'unknown';
@@ -317,8 +335,23 @@ export interface TestFailure {
   stdout?: string;
 }
 
+/** One test's final outcome in a run (every test, not only failures). */
+export interface TestOutcome {
+  file: string;
+  line?: number;
+  title: string;
+  project?: string;
+  status: TestStatus;
+  durationMs?: number;
+  failureKind?: FailureKind;
+  /** First line of the error, for failed/flaky tests. */
+  message?: string;
+}
+
 export interface RunTestResult {
   ok: boolean;
+  /** Final outcome of every test in the run (feeds run history). */
+  outcomes?: TestOutcome[];
   exitCode: number | null;
   signalName: string | null;
   durationMs: number;
@@ -394,6 +427,15 @@ export interface ElementInfo {
   attributes: Record<string, string>;
   visible: boolean;
   box?: { x: number; y: number; width: number; height: number };
+  /** Accessible name, when the element has a role. */
+  name?: string;
+  /**
+   * Playwright locators proven (in the same page) to resolve to exactly this
+   * element, best first: role + name, test id, label, placeholder, text, CSS.
+   */
+  locators?: import('../utils/locator-expr.js').LocatorCall[][];
+  /** heal mode: how closely the element matches the broken locator. */
+  score?: number;
 }
 
 export interface ConsoleMessageInfo {

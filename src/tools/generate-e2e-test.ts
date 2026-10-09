@@ -28,6 +28,7 @@ import {
 } from '../utils/path-utils.js';
 import {
   assertHttpUrl,
+  bestLocator,
   clipLines,
   guard,
   resolveConfigSelection,
@@ -138,10 +139,34 @@ function verifiedLive(candidate: SelectorCandidate, elements: ElementInfo[] | un
   });
 }
 
+/**
+ * Live elements worth a step: those whose accessible name or test id shares
+ * words with the description, else the first interactive ones. Every
+ * locator returned was proven unique on the page.
+ */
+export function pickLiveLocators(description: string, elements: ElementInfo[] | undefined, max = 5): Array<{ locator: string; role?: string; name?: string }> {
+  if (!elements) return [];
+  const words = new Set(description.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2));
+  const usable = elements
+    .map((element) => ({ element, locator: bestLocator(element) }))
+    .filter((entry): entry is { element: ElementInfo; locator: string } => entry.locator !== undefined && !entry.locator.startsWith('locator('));
+  const score = (element: ElementInfo): number => {
+    const hay = `${element.name ?? ''} ${element.attributes['data-testid'] ?? ''} ${element.attributes.placeholder ?? ''}`.toLowerCase();
+    return [...words].filter((w) => hay.includes(w)).length;
+  };
+  const actionable = new Set(['button', 'link', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio']);
+  const ranked = usable
+    .map((entry) => ({ ...entry, score: score(entry.element) }))
+    .filter((entry) => entry.score > 0 || actionable.has(entry.element.role ?? ''))
+    .sort((a, b) => b.score - a.score);
+  return ranked.slice(0, max).map((entry) => ({ locator: entry.locator, role: entry.element.role, name: entry.element.name }));
+}
+
 function buildSpec(options: {
   description: string;
   entryUrl?: string;
   selectors: SelectorCandidate[];
+  live?: Array<{ locator: string; role?: string; name?: string }>;
 }): string {
   const title = jsString(options.description);
   const goto = options.entryUrl
@@ -152,7 +177,20 @@ function buildSpec(options: {
       ].join('\n');
 
   const steps: string[] = [];
-  if (options.selectors.length === 0) {
+  const live = options.live ?? [];
+  if (options.selectors.length === 0 && live.length > 0) {
+    steps.push('  // Locators below were verified unique on the live page (role + accessible name first).');
+    for (const entry of live) {
+      steps.push(`  await expect(page.${entry.locator}).toBeVisible();`);
+      if (entry.role === 'textbox' || entry.role === 'searchbox' || entry.role === 'combobox') {
+        steps.push(`  // await page.${entry.locator}.fill('…');`);
+      } else if (entry.role === 'button' || entry.role === 'link' || entry.role === 'checkbox' || entry.role === 'radio') {
+        steps.push(`  // await page.${entry.locator}.click();`);
+      }
+      steps.push('');
+    }
+    while (steps.length > 0 && steps[steps.length - 1] === '') steps.pop();
+  } else if (options.selectors.length === 0) {
     steps.push(
       '  // No selectors could be discovered from recent changes.',
       '  // Add data-testid attributes to the components, then re-run',
@@ -241,6 +279,7 @@ export const generateE2ETestTool = {
         const outcome = await runBrowserScript(
           {
             mode: 'inspect',
+            view: 'locators',
             projectRoot: root,
             url: entryUrl,
             includeHtml: false,
@@ -275,7 +314,8 @@ export const generateE2ETestTool = {
       );
 
       // 4. Build and (optionally) write the spec.
-      const spec = buildSpec({ description: args.description, entryUrl, selectors: ranked });
+      const live = pickLiveLocators(args.description, liveElements);
+      const spec = buildSpec({ description: args.description, entryUrl, selectors: ranked, live });
 
       let targetPath: string | undefined;
       const shouldWrite = args.write !== false;
@@ -373,6 +413,10 @@ export const generateE2ETestTool = {
             `- \`${candidate.locator}\` — ${candidate.kind} from \`${candidate.file}:${candidate.line}\`_${liveMark}_`,
           );
         }
+        lines.push('');
+      } else if (live.length > 0) {
+        lines.push(`### Locators from the live page (${live.length}, each verified unique)`, '');
+        for (const entry of live) lines.push(`- \`${entry.locator}\``);
         lines.push('');
       } else {
         lines.push(

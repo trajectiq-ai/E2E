@@ -2,20 +2,44 @@
 
 [![CI](https://github.com/trajectiq-ai/E2E/actions/workflows/ci.yml/badge.svg)](https://github.com/trajectiq-ai/E2E/actions/workflows/ci.yml) [![release](https://img.shields.io/github/v/release/trajectiq-ai/E2E)](https://github.com/trajectiq-ai/E2E/releases) [![MCP Registry](https://img.shields.io/badge/MCP%20Registry-io.github.trajectiq--ai%2FE2E-2563eb)](https://registry.modelcontextprotocol.io/)
 
-An [MCP](https://modelcontextprotocol.io) server that lets AI agents **run, debug, and inspect Playwright end-to-end tests** — with structured results, actionable failure diagnostics, and live DOM inspection.
+An [MCP](https://modelcontextprotocol.io) server that **diagnoses and fixes failing Playwright
+tests**. It is the layer that sits next to a browser-driving MCP: Playwright MCP gives an agent
+hands in the browser; this server gives it a test runner, a failure analyst and a verified fixer.
 
 ```
-run-test ──▶ get-failure ──▶ inspect-page ──▶ validate-selector ──▶ fix ──▶ re-run
-   ▲                                                                    │
-   └──────────────────────── list-tests ◀────────────────────────────────┘
+run-test ──▶ get-failure ──▶ suggest-fix (apply + re-run) ──▶ green
+   │              │                 └─ refuses when the element is really gone (app bug)
+   │              └─ DOM at failure, failed requests, console errors
+   └─ background runs, progress ──▶ analyze-history (flaky / broken / regressed)
 ```
 
-Instead of handing an agent raw Playwright output, this server turns every run into
-machinable results: pass/fail stats, per-failure messages with `file:line`, a failure
-kind (assertion, timeout, browser crash, syntax error, dead dev server, full disk…),
-and a concrete "how to fix" hint. When a test fails because a selector no longer
-matches, the agent can open the **live page** in a headless browser, see the real DOM
-with unique CSS selectors, and validate the replacement selector before re-running.
+What it does that a browser-driving MCP or a raw `npx playwright test` does not:
+
+- **Structured runs.** Stats plus each failure's `file:line`, kind (assertion, timeout,
+  dead dev server, syntax error, crash, full disk…) and a concrete fix hint. Long suites run
+  in the background with live progress.
+- **Diagnosis from the trace.** The DOM at the moment of failure, the failed action, the
+  4xx/5xx requests and console errors, read from Playwright's own trace.
+- **Fixes that are proven, not guessed.** `suggest-fix` matches a broken locator against the
+  DOM at failure, swaps in a Playwright locator proven unique on the page
+  (`getByRole('button', { name: 'Proceed to checkout' })`), re-runs the test and reverts the
+  edit if it is still red. When nothing on the page plausibly matches, it says the element is
+  missing and does not patch the test to hide a real bug.
+- **Flakiness across runs.** Every run is recorded locally; `analyze-history` separates
+  tests that flip (flaky) from ones that started failing (regressed) or always fail (broken),
+  and groups failures that share one cause.
+- **Pages behind a login.** Every page tool accepts a Playwright `storageState`, extra
+  headers, and click/fill steps to reach a modal or a later step.
+- **Small on the wire.** In the [benchmark](bench/RESULTS.md), diagnosing and fixing one
+  drifted locator cost about 5,300 tokens here against about 7,400 with Playwright MCP plus a
+  shell, and the fix was applied and verified without the agent editing anything.
+
+### What it does not do
+
+It does not drive an exploratory browsing session step by step, and it does not replace
+Playwright's own Test Agents (planner, generator, healer) inside VS Code. Use Playwright MCP
+for interactive browsing and this server for running, diagnosing and fixing the suite; they
+work side by side in the same client.
 
 ## Demo
 
@@ -23,7 +47,7 @@ with unique CSS selectors, and validate the replacement selector before re-runni
 `https://playwright-e2e-mcp.vercel.app/api/mcp` returns for a client that sends the
 bearer token (without one, only `list-tests` and `get-failure` are listed):
 
-![Token-protected endpoint: initialize handshake and all 8 tools](https://raw.githubusercontent.com/trajectiq-ai/E2E/main/docs/demo-endpoint.png)
+![Token-protected endpoint: initialize handshake and the tool list](https://raw.githubusercontent.com/trajectiq-ai/E2E/main/docs/demo-endpoint.png)
 
 **A real test run** — `run-test` served over stdio by `npx -y playwright-e2e-mcp`
 against the bundled `examples/sample-test.spec.ts` (actual output, unedited):
@@ -46,6 +70,13 @@ and every other MCP client — pick whichever route fits:
 | **Claude Desktop, zero Node setup** | double-click the [`.mcpb` extension](https://github.com/trajectiq-ai/E2E/releases) |
 | **Remote-only clients (ChatGPT connectors)** | `https://playwright-e2e-mcp.vercel.app/api/mcp` |
 
+One line for the common clients:
+
+```bash
+claude mcp add playwright-e2e -- npx -y playwright-e2e-mcp
+code --add-mcp '{"name":"playwright-e2e","command":"npx","args":["-y","playwright-e2e-mcp"]}'
+```
+
 Details and per-client config: [Installation](#installation) ·
 [MCP client configuration](#mcp-client-configuration).
 
@@ -55,14 +86,35 @@ Details and per-client config: [Installation](#installation) ·
 
 | Tool | Purpose |
 | --- | --- |
-| `run-test` | Run Playwright tests and return stats, failures, diagnostics and hints |
-| `get-failure` | Deep analysis of one failure: stack, expected/actual, **DOM snapshot at failure (from the Playwright trace)**, next steps |
-| `inspect-page` | Open a URL headlessly and return the rendered DOM: selectors, visibility, boxes, text, console output, HTML |
+| `run-test` | Run Playwright tests and return stats, failures, diagnostics and hints; reports progress, and `background: true` returns a run id for long suites |
+| `get-run-status` | Progress or final result of a background run; can wait for it or cancel it |
+| `get-failure` | Deep analysis of one failure: stack, expected/actual, **DOM snapshot at failure (from the Playwright trace)**, failed requests, console errors, next steps |
+| `suggest-fix` | Patch a failure: a drifted locator is replaced with one **proven unique** on the DOM at failure, changed copy gets the new expected text; `apply: true` writes it, re-runs the test and reverts if still red |
+| `inspect-page` | Open a URL headlessly (optionally signed in, after steps) and return elements with **verified Playwright locators**, CSS selectors, visibility, text and console output |
 | `list-tests` | List available tests (`file`, `line`, full title, projects) with filtering |
-| `validate-selector` | Check a CSS selector against a live page: validity, match count, sample matches |
-| `generate-e2e-test` | Scaffold a Playwright test from a description using the project's **real** selectors, discovered from recent file changes |
+| `validate-selector` | Check a CSS selector, Playwright selector or **locator expression** against a live page: validity, match count, and a sturdier verified locator for each match |
+| `generate-e2e-test` | Scaffold a Playwright test from a description using the project's **real** selectors and verified locators from the live page |
 | `compare-visual-state` | Visual regression: screenshot before/after a change and report *what* moved and how colors shifted |
 | `diagnose-flaky` | Run a failing test 2–10 times **with retries disabled** and return an evidence verdict: `CONSISTENTLY FAILING`, `FLAKY` or `NOT REPRODUCING` |
+| `analyze-history` | Rank flaky, regressed and broken tests from the local run history, group failures by cause, or show one test's timeline |
+
+Two **prompts** package the main workflows for clients that show them as slash commands:
+`fix-failing-test` (optional `test`) and `triage-flaky-tests`.
+
+### Page state: signed-in pages, headers and steps
+
+`inspect-page`, `validate-selector` and `compare-visual-state` accept the same page-state
+arguments (`suggest-fix` accepts `storageState` and `headers` for a live `url`):
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `storageState` | string | Path inside the project to a Playwright storageState JSON (cookies + localStorage), e.g. `playwright/.auth/user.json` from your setup project. Defaults to `PW_MCP_STORAGE_STATE` |
+| `headers` | object | Extra HTTP headers for every request, e.g. `{ "Authorization": "Bearer …" }` |
+| `actions` | array | Up to 20 steps run after load: `{ "type": "click" \| "dblclick" \| "hover" \| "fill" \| "press" \| "check" \| "uncheck" \| "select" \| "wait" \| "goto", "locator"?, "value"?, "url"?, "ms"? }`. Locators use Playwright syntax, e.g. `getByRole('button', { name: 'Open settings' })` |
+| `viewport` | object | `{ "width": 390, "height": 844 }` (default 1280×720) |
+
+A failing step reports which one failed and how many ran. When the page lands on a login
+screen, the response says so and suggests `storageState`.
 
 ### `run-test`
 
@@ -80,6 +132,11 @@ Details and per-client config: [Installation](#installation) ·
 | `retryOnFailure` | boolean | Auto-retry failures **once** before reporting them (default `true`; ignored when `retries` is set) |
 | `lastFailed` | boolean | Only re-run tests that failed in the previous run (Playwright `--last-failed`) — the fast fix → re-run loop |
 | `args` | string[] | Extra Playwright flags from an allowlist (`--repeat-each=N`, `--max-failures=N`, `--update-snapshots`, `--shard=1/3`, `--trace=on`, …); values go after `=` and are checked, and flags that take a path, such as `--config` or `--output`, are rejected |
+| `background` | boolean | Return a run id at once; poll `get-run-status` for progress and the result |
+
+Progress: clients that send a progress token get a notification as each test finishes
+(`3/12 tests done, 1 failed`). Every run is appended to the local history used by
+`analyze-history`.
 
 Flakiness handling: by default the server injects `--retries=1` (unless the config
 already sets `retries`), so a test that passes on the retry is reported as **flaky**,
@@ -130,16 +187,25 @@ numbered next steps (re-run this single test by `file:line`, headed/debug mode,
 | Argument | Type | Description |
 | --- | --- | --- |
 | `url` | string | Full http(s) URL to open (required) |
+| `view` | `elements` \| `locators` | `locators` returns a compact map of interactive elements with verified locators (cheapest); `elements` (default) the DOM inventory |
 | `projectRoot` | string | Project whose Playwright launches the browser |
-| `selector` | string | Inspect matches of this CSS selector instead of the whole DOM |
+| `selector` | string | Inspect matches of this selector instead of the whole DOM |
 | `waitFor` | string | Wait for a selector (CSS or `text=…`) before inspecting |
 | `waitUntil` | `load` \| `domcontentloaded` \| `networkidle` | Navigation wait condition |
 | `includeHtml` | boolean | Include the rendered HTML (capped) |
 | `maxHtmlChars` | number | HTML cap, default `20000` |
 | `timeoutMs` | number | Overall limit, default `45000` |
+| `storageState` / `headers` / `actions` / `viewport` | — | [Page state](#page-state-signed-in-pages-headers-and-steps) |
 
-Returns each element's **unique CSS selector**, tag, visibility, bounding box, text and
-attributes, plus captured console messages (errors first).
+Each element comes with Playwright locators that were **checked on the page** to resolve to
+exactly that element, best first (role + accessible name, test id, label, placeholder, text,
+then CSS), plus its unique CSS selector, visibility, box and text. Console messages are
+captured, errors first. A locator map looks like:
+
+```markdown
+1. `getByRole('button', { name: 'Proceed to checkout' })` — button "Proceed to checkout" · also `getByTestId('checkout-btn')`
+2. `getByLabel('Search')` — searchbox "Search"
+```
 
 ### `list-tests`
 
@@ -159,14 +225,19 @@ Uses `playwright test --list` when Playwright works, and **falls back to a sourc
 | Argument | Type | Description |
 | --- | --- | --- |
 | `url` | string | Live page to test against (required) |
-| `selector` | string | CSS selector to validate (required) |
+| `selector` | string | CSS, a Playwright selector (`text=`, `role=`, `>>`) or a locator expression such as `getByRole('button', { name: 'Save' }).first()` (required) |
 | `projectRoot` | string | Project whose Playwright launches the browser |
 | `timeoutMs` | number | Overall limit, default `45000` |
+| `storageState` / `headers` / `actions` / `viewport` | — | [Page state](#page-state-signed-in-pages-headers-and-steps) |
 
-Verdicts: `✅ VALID — N matches` (with a sample of matches), `✅ VALID — 0 matches`
-(with debugging advice), `❌ INVALID` (parse error + fix), or a warning when the input
-uses a Playwright-only engine (`text=`, `xpath=`, `>>`, `:has-text()`), which is not
-plain CSS.
+Locator expressions are parsed into a whitelisted call chain (`getByRole`, `getByText`,
+`getByLabel`, `getByPlaceholder`, `getByAltText`, `getByTitle`, `getByTestId`, `locator`,
+`first`, `last`, `nth`, `filter`) and are never evaluated as code.
+
+Verdicts: `✅ VALID — N matches` with a sample of matches and a **unique locator** for each,
+a strict-mode warning when more than one element matches, a hint when a CSS selector is
+brittle (`:nth-child`, long descendant chains, XPath), `✅ VALID — 0 matches` with debugging
+advice, or `❌ INVALID` with the parse error.
 
 ### `generate-e2e-test`
 
@@ -184,7 +255,8 @@ Reads the agent's recent changes (`git status`, falling back to `git diff HEAD~1
 then recent mtimes), extracts the locators those files actually declare
 (`data-testid`, `getByRole`, `aria-label`, `placeholder`, `id`, `name`, element text),
 ranks verified-live selectors first, writes a spec built from them, and reports each
-selector with its source `file:line`.
+selector with its source `file:line`. When the source has no usable selectors, it uses the
+verified locators from the live page that best match the description.
 
 ### `compare-visual-state`
 
@@ -198,6 +270,7 @@ selector with its source `file:line`.
 | `tolerance` | number | Percent of pixels that may differ (default `0.1`) |
 | `pixelThreshold` | number | Per-pixel channel delta considered different (default `60`) |
 | `waitUntil` / `waitFor` / `timeoutMs` | — | As with `inspect-page` |
+| `storageState` / `headers` / `actions` / `viewport` | — | [Page state](#page-state-signed-in-pages-headers-and-steps) |
 
 The first call saves a baseline under `.pw-mcp/visual/` (add that to `.gitignore`, or
 commit it for CI comparisons). Later calls report changed-pixel counts, **merged
@@ -226,6 +299,60 @@ failure), the count of **distinct normalized error signatures**, and one of:
 - **✅ NOT REPRODUCING** — passed every re-run; the original failure was one-off.
 
 The last run is stored, so `get-failure` can analyze it immediately afterwards.
+
+### `suggest-fix`
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `index` | number | 1-based failure index from the last run (default `1`) |
+| `apply` | boolean | Write the fix into the spec (default `false`: return the diff only) |
+| `verify` | boolean | After applying, re-run the test and revert the file if it still fails (default `true`) |
+| `allowExpectationUpdate` | boolean | Allow applying a changed expected text/value (default `false`, since it can hide a real regression) |
+| `url` | string | Heal against this live page instead of the DOM snapshot in the failure trace |
+| `storageState` / `headers` | — | For `url`, as in [Page state](#page-state-signed-in-pages-headers-and-steps) |
+| `config` / `timeoutMs` / `projectRoot` | — | As with `run-test` |
+
+Two kinds of fix:
+
+- **Locator drift.** The broken locator is read from the error, its words are matched
+  (with synonyms such as *btn → button*, *checkout → proceed to checkout*) against every
+  element in the DOM at failure, and the best match's verified-unique locator replaces it.
+  Confidence is `high` when the match is clear, `medium` otherwise.
+- **Changed copy.** For `toHaveText`, `toContainText`, `toHaveValue`, `toHaveTitle`,
+  `toHaveURL` and `toHaveAttribute`, it proposes the value the page actually showed. It is
+  only applied with `allowExpectationUpdate: true`.
+
+The response is a unified diff. With `apply: true` the file is written only if it has not
+changed since the failure, the single test is re-run (same project, no retries), and the
+edit is reverted when it is still red. If nothing on the page shares the locator's
+distinctive words, it refuses and reports that the element is most likely **missing**.
+
+### `get-run-status`
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `runId` | string | Run id from `run-test` with `background: true` (default: the most recent run) |
+| `waitSeconds` | number | Wait up to this long (max 55) for the run to finish |
+| `cancel` | boolean | Stop the run and kill its browsers |
+
+While running it reports tests done / total and failures so far; once finished it returns
+the full `run-test` result, which also becomes the last run for `get-failure` and
+`suggest-fix`. The 20 most recent runs are kept in memory.
+
+### `analyze-history`
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `view` | `flaky` \| `patterns` \| `test` | `flaky` (default) ranks unstable tests; `patterns` groups failures by kind and normalized error; `test` shows one test's timeline |
+| `test` | string | Substring of a test's file or title (filters every view) |
+| `lastRuns` | number | How many recent runs to analyze (default `30`) |
+| `limit` | number | Max rows (default `15`) |
+
+Every `run-test`, `diagnose-flaky` and `suggest-fix` run appends a line to
+`<project>/.playwright-e2e-mcp/history.jsonl` (the folder carries its own `.gitignore`;
+nothing leaves the machine; `PW_MCP_HISTORY=0` turns it off). The flaky view separates
+tests that flip between pass and fail, tests that started failing and stayed red
+(regressed), and tests that failed every run (broken), each with a `PFFP~` timeline.
 
 ---
 
@@ -364,7 +491,7 @@ has `PW_MCP_HTTP_TOKEN` set, so a request without `Authorization: Bearer <token>
 bridge (below).
 
 **Open vs. token-protected.** With `PW_MCP_HTTP_TOKEN` set (at least 16
-characters; use a random value) all eight tools are served to clients that send
+characters; use a random value) every tool is served to clients that send
 `Authorization: Bearer <token>`, and every other request gets `401`. Without that
 variable anyone who reaches the URL can call the bridge, so it degrades to
 `list-tests` and `get-failure` in restricted mode: `list-tests` scans sources
@@ -422,6 +549,8 @@ every push, so there is no token to manage and no CLI step — watch the
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
 | `PW_MCP_PROJECT_ROOT` | server cwd | Default project root for every tool |
+| `PW_MCP_STORAGE_STATE` | — | Default `storageState` file (inside the project) for the page tools |
+| `PW_MCP_HISTORY` | on | `0` stops recording runs to `.playwright-e2e-mcp/history.jsonl` |
 | `PW_MCP_ALLOWED_ROOTS` | — | Extra directories a caller may pass as `projectRoot` (`:`-separated, `;` on Windows). Anything outside these and the default root is rejected |
 | `PW_MCP_HTTP_TOKEN` | — | HTTP bridge only: bearer token (16+ characters) that unlocks all tools (see above) |
 | `PW_MCP_ALLOWED_HOSTS` | localhost + Vercel hostnames when there is no token | HTTP bridge only: comma-separated `Host` allowlist; `*` accepts any |
@@ -442,22 +571,40 @@ object (`time`, `level`, `message` plus context):
 
 ## Typical workflow
 
-1. `generate-e2e-test` `{ "description": "checkout with a saved card" }` — scaffolds a
-   spec from your real selectors (skipped if you write the test yourself).
-2. `list-tests` — see what exists (`tests/checkout.spec.ts:5 checkout › pays with card`).
-3. `run-test` `{ "testFiles": ["tests/checkout.spec.ts"] }` — run it; get stats + failures
-   (flaky tests are auto-retried once before being called failures).
-4. `get-failure` `{ "index": 1 }` — read the code frame, expected/actual, **the DOM
-   snapshot at failure from the trace**, the failed network requests, the page's
-   console errors, and next steps.
-5. If it looks selector-related: `inspect-page` `{ "url": "http://localhost:3000/checkout" }`
-   to see the real DOM, then `validate-selector` to prove the replacement selector works.
-6. After changing CSS/components: `compare-visual-state` `{ "url": "…", "name": "checkout" }`
-   to catch unintended visual regressions.
-7. If a failure looks intermittent: `diagnose-flaky` `{ "runs": 3 }` — get the evidence
-   verdict (flaky vs consistently broken) before deciding what to fix.
-8. Fix the spec or the app, then re-run **only what failed**:
-   `run-test` `{ "lastFailed": true }`, and repeat until green.
+1. `run-test` `{ "testFiles": ["tests/checkout.spec.ts"] }`, or `{ "background": true }`
+   for a long suite and `get-run-status` `{ "waitSeconds": 30 }` until it finishes.
+2. `get-failure` `{ "index": 1 }` to read the code frame, expected/actual, **the DOM
+   snapshot at failure**, the failed network requests and the page's console errors.
+3. `suggest-fix` `{ "index": 1 }` for a locator or copy change: review the diff, then
+   `{ "index": 1, "apply": true }` to write it and verify with a re-run. If it reports the
+   element is missing, fix the app, not the test.
+4. For anything it cannot patch: `inspect-page` `{ "url": "…", "view": "locators" }`
+   (add `storageState` or `actions` to reach the right screen), then `validate-selector`
+   to prove the new locator before editing.
+5. If a failure looks intermittent: `diagnose-flaky` `{ "runs": 3 }` for fresh evidence,
+   and `analyze-history` to see how the test behaved across earlier runs.
+6. After changing CSS or components: `compare-visual-state` `{ "url": "…", "name": "checkout" }`.
+7. Re-run **only what failed** with `run-test` `{ "lastFailed": true }` until green.
+
+To write a new test, start with `generate-e2e-test` `{ "description": "checkout with a saved card" }`.
+
+## Benchmark
+
+[`bench/token-benchmark.mjs`](bench/token-benchmark.mjs) breaks a checkout button's test id
+on a storefront page and fixes it two ways: with this server (`run-test` → `suggest-fix` →
+apply) and with Playwright MCP plus a shell (`playwright test`, `browser_navigate` +
+`browser_snapshot`, edit, re-run). Latest result ([full output](bench/RESULTS.md)):
+
+| Step | playwright-e2e-mcp | Playwright MCP + shell |
+| --- | ---: | ---: |
+| Tool definitions (sent with every request) | 4,565 | 4,726 |
+| Run the failing test | 246 | 325 |
+| Find the element / propose the fix | 260 | 2,286 |
+| Apply + verify (re-run) | 257 | 34 |
+| **Total for one fix** | 5,328 | 7,371 |
+
+Tokens are characters ÷ 4. The Playwright MCP route is a lower bound: it assumes the agent
+picks the right locator from the snapshot on the first try, which the server does for it here.
 
 ## Edge cases handled
 
@@ -518,10 +665,12 @@ object (`time`, `level`, `message` plus context):
 src/
 ├── index.ts            # bin entry point (--version/--help, main-module guard)
 ├── server.ts           # McpServer setup, tool registration, shutdown handling
-├── tools/              # the eight tools + shared plumbing
+├── tools/              # the eleven tools, the probe script + shared plumbing
+├── prompts.ts          # fix-failing-test, triage-flaky-tests
 ├── utils/              # playwright-runner, report-parser, project-detector, path-utils,
 │                       # logger, trace-reader (trace.zip → DOM/network/console),
-│                       # image-diff (PNG codec + pixel diff), change-analyzer
+│                       # image-diff (PNG codec + pixel diff), change-analyzer,
+│                       # locator-expr, run-history, run-registry
 └── types/              # shared interfaces and the ErrorKind taxonomy
 ```
 
@@ -557,7 +706,10 @@ server over stdio against a live fixture app and a Playwright project under
 `e2e/fixture/`, then drives it exactly like an MCP client and asserts ~40 behaviours
 that only appear end-to-end:
 
-- initialize handshake, 8 tools, spec tool annotations and object input schemas,
+- initialize handshake, 11 tools, 2 prompts, spec tool annotations and object input schemas,
+- verified locators, locator validation, signed-in pages (`storageState`) and page steps,
+- background runs with progress, run history views, and `suggest-fix` healing a drifted
+  locator and verifying it with a re-run (and refusing when the element is missing),
 - live DOM inspection, CSS selector validation (matches, zero matches, engine
   syntax, parse errors), dead-server detection,
 - visual regression: baseline → unchanged compare → `blue → red` diff detection,

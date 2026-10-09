@@ -1,0 +1,6 @@
+{
+  "name": "playwright-e2e-mcp-bench-project",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Benchmark project for bench/token-benchmark.mjs. Playwright resolves from the repository root."
+}

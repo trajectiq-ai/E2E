@@ -7,7 +7,7 @@
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { PlaywrightMcpError } from '../types/index.js';
-import type { TestFailure, ToolContext, ToolResponse } from '../types/index.js';
+import type { LastRunRecord, TestFailure, ToolContext, ToolResponse } from '../types/index.js';
 import { parseReportJson } from '../utils/report-parser.js';
 import { readFailureTrace } from '../utils/trace-reader.js';
 import {
@@ -195,6 +195,22 @@ async function renderFailureDetail(failure: TestFailure, index: number, total: n
   return lines.join('\n');
 }
 
+/**
+ * Every failure of a run. The run-level result caps failures; re-read the
+ * JSON report for the full list when more failures were recorded than shown.
+ */
+export async function allFailures(record: LastRunRecord): Promise<TestFailure[]> {
+  const failures = record.result.failures;
+  if (record.result.reportPath && record.result.failuresTruncated) {
+    const raw = await readFile(record.result.reportPath, 'utf8').catch(() => null);
+    if (raw !== null) {
+      const parsed = parseReportJson(raw, record.projectRoot, 200);
+      if (parsed.failures.length > failures.length) return parsed.failures;
+    }
+  }
+  return failures;
+}
+
 export const getFailureTool = {
   name: 'get-failure',
   description:
@@ -209,17 +225,7 @@ export const getFailureTool = {
         });
       }
 
-      let failures = record.result.failures;
-
-      // The run-level result caps failures; re-read the JSON report for
-      // the full list when more failures were recorded than shown.
-      if (record.result.reportPath && record.result.failuresTruncated) {
-        const raw = await readFile(record.result.reportPath, 'utf8').catch(() => null);
-        if (raw !== null) {
-          const parsed = parseReportJson(raw, record.projectRoot, 200);
-          if (parsed.failures.length > failures.length) failures = parsed.failures;
-        }
-      }
+      const failures = await allFailures(record);
 
       const total = failures.length;
       if (total === 0) {

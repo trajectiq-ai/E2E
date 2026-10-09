@@ -17,6 +17,7 @@ import type {
 import { detectProject, missingPlaywrightMessage } from '../utils/project-detector.js';
 import { runTests } from '../utils/playwright-runner.js';
 import { relativeToRoot } from '../utils/path-utils.js';
+import { recordRun } from '../utils/run-history.js';
 import {
   clipLines,
   formatDuration,
@@ -298,6 +299,8 @@ export const diagnoseFlakyTool = {
           signal: ctx.signal,
         });
         lastResult = result;
+        await recordRun(root, result, 'diagnose-flaky').catch(() => undefined);
+        ctx.progress?.(i + 1, runsRequested, `run ${i + 1} of ${runsRequested}: ${result.ok ? 'passed' : 'failed'}`);
 
         const first = result.failures[0];
         const noTests = ranNoTests(result);

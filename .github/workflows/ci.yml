@@ -62,8 +62,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The archive writer differs by platform (zip on POSIX, bsdtar on
-        # Windows), so the bundle is built and launched on both.
+        # The bundle is built and driven on both platforms; the two hashes are
+        # compared by mcpb-reproducible below.
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -74,8 +74,64 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Build the bundle and simulate a host install
+      - name: Build the bundle and drive it with a real MCP client
         run: npm run mcpb:smoke
+      - name: Record the hash of the bundle this platform built
+        shell: bash
+        run: |
+          node -e "
+            const { createHash } = require('node:crypto');
+            const { readFileSync } = require('node:fs');
+            const pkg = require('./package.json');
+            const name = pkg.name + '-' + pkg.version + '.mcpb';
+            const hash = createHash('sha256').update(readFileSync(name)).digest('hex');
+            console.log(hash + '  ' + name);
+          " | tee bundle.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mcpb-hash-${{ runner.os }}
+          path: bundle.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  # A reproducible bundle has to hash the same wherever it is built, so the
+  # archive never depends on the machine that produced it. Each platform above
+  # records the hash of what it built; this job fails unless they agree.
+  mcpb-reproducible:
+    name: mcpb reproducible across platforms
+    needs: mcpb
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: mcpb-hash-*
+          path: hashes
+      - name: Compare every platform's hash
+        shell: bash
+        run: |
+          mapfile -t files < <(find hashes -name bundle.sha256 | sort)
+          if [ "${#files[@]}" -lt 2 ]; then
+            echo "::error::expected one hash per platform, found ${#files[@]}"
+            exit 1
+          fi
+          expected=''
+          for file in "${files[@]}"; do
+            echo "--- $file"
+            cat "$file"
+            hash=$(awk '{ print $1 }' "$file")
+            if [ -z "$hash" ]; then
+              echo "::error::$file recorded no hash"
+              exit 1
+            fi
+            if [ -z "$expected" ]; then
+              expected="$hash"
+            elif [ "$hash" != "$expected" ]; then
+              echo "::error::$file hashed $hash but another platform hashed $expected - the bundle is not reproducible across platforms"
+              exit 1
+            fi
+          done
+          echo "::notice title=mcpb::every platform produced the same bundle: $expected"
 
   pack:
     name: npm pack dry run

@@ -10,6 +10,11 @@
  * and as a one-click install artifact for Claude Desktop.
  *
  * Usage: npm run mcpb   →  playwright-e2e-mcp-<version>.mcpb
+ *
+ * The archive is written by scripts/zip-writer.mjs. The platform `zip` and
+ * `bsdtar` tools cannot be used for it: they choose their own entry order, so
+ * three builds of one tree produced three different archives. This build is
+ * byte-reproducible instead — see the lockfile note in step 5.
  */
 
 import {
@@ -18,10 +23,8 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   statSync,
-  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -29,17 +32,16 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildManifest } from './mcpb-manifest.mjs';
+import { createZip, DEFAULT_EPOCH } from './zip-writer.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 const stage = path.join(root, 'dist-mcpb');
-const zipPath = path.join(root, 'bundle.zip');
 const outPath = path.join(root, `${pkg.name}-${pkg.version}.mcpb`);
 
-// The staging dir and temp zip never outlive the script, success or not.
+// The staging dir never outlives the script, success or not.
 process.on('exit', () => {
   rmSync(stage, { recursive: true, force: true });
-  rmSync(zipPath, { force: true });
 });
 
 // No shell: arguments are passed as an array. npm is run through its own
@@ -76,10 +78,43 @@ function listFiles(dir, prefix = '') {
   return out;
 }
 
+/**
+ * Text payloads are normalised to LF before they are archived.
+ *
+ * Nothing in the bundle is binary, so "no NUL byte" cleanly separates text
+ * from bytes. Normalising means an archive built from a CRLF checkout cannot
+ * differ from one built from the same commit anywhere else, and it settles
+ * dependencies that ship CRLF of their own (the MCP SDK's `.d.cts`/`.d.mts`
+ * pair and npm's `.package-lock.json`).
+ */
+function normaliseLineEndings(buf) {
+  if (buf.subarray(0, 8192).includes(0)) return buf; // binary: leave untouched
+  return Buffer.from(buf.toString('utf8').replace(/\r\n/g, '\n'), 'utf8');
+}
+
+function sha256(buf) {
+  return createHash('sha256').update(buf).digest('hex');
+}
+
+/** Entry names from an archive's central directory, in stored order. */
+function readEntryNames(zip) {
+  const eocd = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (eocd === -1) throw new Error('not a zip archive');
+  const count = zip.readUInt16LE(eocd + 10);
+  let offset = zip.readUInt32LE(eocd + 16);
+  const names = [];
+  for (let i = 0; i < count; i += 1) {
+    if (zip.readUInt32LE(offset) !== 0x02014b50) break;
+    const nameLen = zip.readUInt16LE(offset + 28);
+    names.push(zip.toString('utf8', offset + 46, offset + 46 + nameLen));
+    offset += 46 + nameLen + zip.readUInt16LE(offset + 30) + zip.readUInt16LE(offset + 32);
+  }
+  return names;
+}
+
 // 1. Fresh staging directory with only what the server needs at runtime.
 //    The previous bundle stays in place until the new one is verified.
 rmSync(stage, { recursive: true, force: true });
-rmSync(zipPath, { force: true });
 mkdirSync(stage, { recursive: true });
 
 cpSync(path.join(root, 'package.json'), path.join(stage, 'package.json'));
@@ -100,57 +135,42 @@ else {
 // 2. Write the manifest built by buildManifest(pkg).
 writeFileSync(path.join(stage, 'manifest.json'), `${JSON.stringify(buildManifest(pkg), null, 2)}\n`, 'utf8');
 
-// 3. Zip the staging directory with CLEAN entry names (manifest.json at
-//    the archive root — Claude Desktop's DXT loader rejects `./`-prefixed
-//    entries). For a reproducible archive every file gets the same mtime
-//    (SOURCE_DATE_EPOCH, default 2020-01-01) and entries are added in
-//    sorted order without extra attributes. Windows: bsdtar detects the
-//    zip format from content; its entry order is its own.
-const epoch = Number(process.env.SOURCE_DATE_EPOCH ?? '') || 1577836800;
+// 3. Archive with the deterministic writer: entries in sorted order, one
+//    fixed timestamp (SOURCE_DATE_EPOCH, default 2020-01-01), no extra fields
+//    and no host-derived attributes, so the same tree always hashes the same.
+const epoch = Number(process.env.SOURCE_DATE_EPOCH ?? '') || DEFAULT_EPOCH;
 const members = ['manifest.json', 'dist', 'node_modules', 'package.json'];
 const files = members.flatMap((member) =>
   statSync(path.join(stage, member)).isDirectory() ? listFiles(stage, member) : [member],
 );
-for (const file of files) utimesSync(path.join(stage, file), epoch, epoch);
-if (process.platform === 'win32') {
-  // Prefer the system bsdtar: a PATH `tar` may be GNU tar (Git Bash),
-  // which cannot write zips and parses `C:\...` as a remote host.
-  const systemTar = ['C:/Windows/System32/tar.exe', 'C:/Windows/tar.exe'].find((candidate) => existsSync(candidate));
-  run(systemTar ?? 'tar', ['-a', '-c', '-f', zipPath, '-C', stage, ...members], root);
-} else {
-  run('zip', ['-X', '-D', '-q', zipPath, '-@'], stage, `${files.join('\n')}\n`);
-}
-
-// 4. Read the zip central directory and fail the build unless
-//    manifest.json sits at the archive root (extraction masks a bad
-//    prefix, so verify the entries themselves).
-const zip = readFileSync(zipPath);
-const eocd = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
-if (eocd === -1) {
-  console.error('mcpb: not a zip archive');
+const entries = files.map((file) => ({
+  name: file,
+  data: normaliseLineEndings(readFileSync(path.join(stage, file))),
+}));
+if (!entries.some((entry) => entry.name === 'manifest.json')) {
+  console.error('mcpb: manifest.json is missing from the archive root');
   process.exit(1);
 }
-const entryCount = zip.readUInt16LE(eocd + 10);
-let offset = zip.readUInt32LE(eocd + 16);
-const names = [];
-for (let i = 0; i < entryCount; i += 1) {
-  if (zip.readUInt32LE(offset) !== 0x02014b50) break;
-  const nameLen = zip.readUInt16LE(offset + 28);
-  names.push(zip.toString('utf8', offset + 46, offset + 46 + nameLen));
-  offset += 46 + nameLen + zip.readUInt16LE(offset + 30) + zip.readUInt16LE(offset + 32);
-}
+const zip = createZip(entries, { epoch });
+
+// 4. Read the archive back and fail unless manifest.json sits at its root:
+//    Claude Desktop's DXT loader rejects `./`-prefixed entries, and
+//    extraction masks a bad prefix, so check the entries themselves.
+const names = readEntryNames(zip);
 if (!names.includes('manifest.json')) {
   console.error(`mcpb: manifest.json not at archive root (entries: ${names.slice(0, 5).join(', ')} …)`);
   process.exit(1);
 }
 
-// 5. Only now replace the previous bundle, then record what went in and
-//    what came out, so a release can be checked against its lockfile.
-renameSync(zipPath, outPath);
-const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
+// 5. Only now replace the previous bundle, then record what went in and what
+//    came out, so a release can be checked against its lockfile. The lockfile
+//    hash is taken over LF-normalised content: hashing the working-tree file
+//    directly recorded a CRLF hash on Windows, which nobody checking the
+//    repository's committed (LF) lockfile could reproduce.
+writeFileSync(outPath, zip);
 writeFileSync(
   `${outPath}.sha256`,
-  `${sha256(outPath)}  ${path.basename(outPath)}\n${sha256(path.join(root, 'package-lock.json'))}  package-lock.json\n`,
+  `${sha256(zip)}  ${path.basename(outPath)}\n${sha256(normaliseLineEndings(readFileSync(path.join(root, 'package-lock.json'))))}  package-lock.json\n`,
   'utf8',
 );
 

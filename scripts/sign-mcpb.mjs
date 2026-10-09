@@ -58,8 +58,13 @@ export function signBundle({ bundle, cert, key, outPath }) {
   if (path.resolve(bundle) === path.resolve(outPath)) {
     throw new Error('refusing to sign over the unsigned bundle: the reproducible artifact must stay untouched');
   }
-  if (!existsSync(cert)) throw new Error(`no certificate at ${cert}`);
-  if (!existsSync(key)) throw new Error(`no private key at ${key}`);
+  // These messages name the option, never the configured path: the path comes
+  // from the environment, and a rule that treats environment values as
+  // sensitive (CodeQL js/clear-text-logging, which flagged exactly this) is
+  // right to — the log outlives the setup, and an env var is not a safe place
+  // to assume a non-secret.
+  if (!existsSync(cert)) throw new Error('the certificate file does not exist — check --cert / MCPB_CERT');
+  if (!existsSync(key)) throw new Error('the private key file does not exist — check --key / MCPB_KEY');
 
   copyFileSync(bundle, outPath);
   const report = mcpbCli(['sign', '--cert', cert, '--key', key, outPath]);

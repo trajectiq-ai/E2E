@@ -9,6 +9,7 @@ import {
   createToolStore,
   failureHint,
   formatDuration,
+  markdownCell,
   resolveConfigSelection,
   sanitizeTestPathArgument,
   testPathExists,
@@ -134,6 +135,28 @@ test('formatDuration and clipLines keep output readable', () => {
   assert.match(clipLines('a\nb\nc', 2), /1 more line/);
   assert.match(clipLines('a\nb\nc\nd\ne', 2), /3 more lines/);
   assert.ok(clipLines('x'.repeat(500), 10, 50).length <= 51);
+});
+
+test('markdownCell escapes backslashes before pipes', () => {
+  assert.equal(markdownCell('a|b'), 'a\\|b');
+  assert.equal(markdownCell('a\\b'), 'a\\\\b');
+  assert.equal(markdownCell('plain text'), 'plain text');
+
+  // Regression (CodeQL js/incomplete-sanitization): escaping only `|` let a
+  // backslash already in the text absorb the inserted escape, so the pipe
+  // stayed live and split the table row.
+  assert.equal(markdownCell('C:\\tmp|injected'), 'C:\\\\tmp\\|injected');
+
+  // Every pipe in the output must be preceded by an odd number of backslashes.
+  for (const sample of ['a|b', 'a\\|b', 'C:\\tmp|injected', 'x|y|z', '\\\\|']) {
+    const out = markdownCell(sample);
+    for (let i = 0; i < out.length; i += 1) {
+      if (out[i] !== '|') continue;
+      let backslashes = 0;
+      for (let j = i - 1; j >= 0 && out[j] === '\\'; j -= 1) backslashes += 1;
+      assert.equal(backslashes % 2, 1, `unescaped pipe in ${JSON.stringify(out)}`);
+    }
+  }
 });
 
 test('every failure kind maps to an actionable hint', () => {

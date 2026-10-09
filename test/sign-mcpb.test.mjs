@@ -61,7 +61,7 @@ test('signing without a certificate or key fails before touching the bundle', ()
           key: path.join(dir, 'key.pem'),
           outPath: path.join(dir, 'out.signed.mcpb'),
         }),
-      /no certificate at/,
+      /the certificate file does not exist/,
     );
     assert.throws(
       () =>
@@ -71,7 +71,7 @@ test('signing without a certificate or key fails before touching the bundle', ()
           key: path.join(dir, 'missing-key.pem'),
           outPath: path.join(dir, 'out.signed.mcpb'),
         }),
-      /no private key at/,
+      /the private key file does not exist/,
     );
     assert.deepEqual(readFileSync(bundle), before, 'the unsigned bundle must be untouched');
   } finally {

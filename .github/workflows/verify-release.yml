@@ -1,0 +1,79 @@
+name: Verify release
+
+# Re-derives a published release from its tag and fails if anything differs.
+#
+# The release notes promise that `npm ci && npm run mcpb` on the tag rebuilds
+# the published bundle byte for byte. Until now that promise was only ever
+# checked by hand, once, at release time — this makes it a gate that runs on
+# every release, and on demand against any past tag.
+#
+# It checks the bundle against a fresh build, every checksum the release
+# publishes, a signed bundle against the bytes its signature wraps, and drives
+# the published file with the official MCP SDK client.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to verify (e.g. v0.2.1); empty means the latest release
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: re-derive the release from its tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve the tag to verify
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${INPUT_TAG:-${RELEASE_TAG:-}}"
+          if [ -z "$tag" ]; then
+            tag="$(gh release view --json tagName --jq .tagName)"
+          fi
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::'$tag' is not a release tag (expected v*)"; exit 1 ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "verifying $tag"
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Rebuild the bundle from this tag
+        run: npm run mcpb
+
+      - name: Download the published release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: gh release download "$TAG" -D release-assets
+
+      - name: Verify the release matches this tree
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: node scripts/verify-release.mjs "$TAG" --dir release-assets
+
+      - name: Drive the published bundle with a real MCP client
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          node scripts/mcpb-client-check.mjs "release-assets/${name}-${version}.mcpb"

@@ -11,6 +11,9 @@ bundle.zip
 *.mcpb
 *.mcpb.sha256
 
+# Agent skill package (npm run skill:zip) — built from skill/, uploaded to the marketplace
+dist-skill/
+
 # npm pack output (uploaded as a release asset, never tracked)
 *.tgz
 

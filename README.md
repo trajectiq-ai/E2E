@@ -686,6 +686,8 @@ npm run e2e     # build + e2e/run.mjs: live MCP ↔ Playwright integration suite
 npm run mcpb    # build + bundle dist/ into playwright-e2e-mcp-<version>.mcpb (+ .sha256)
 npm run mcpb:smoke   # ...then install that bundle in a temp dir, launch it and assert the handshake
 npm run mcpb:sign    # ...then sign it with MCPB_CERT/MCPB_KEY → <version>.signed.mcpb
+npm run skill:zip    # → dist-skill/playwright-e2e-mcp.zip, the Agent Skill package to upload
+npm run skill:check  # build, then fail if a packaged copy has drifted from skill/
 ```
 
 Tests cover the report parser (sample Playwright JSON, trace attachments), path utils
@@ -699,7 +701,9 @@ helpers, the **trace reader** (synthetic trace.zip: error, failed action, DOM sn
 the **HTTP bridge** (token, restricted mode, Host allowlist), the **security
 regressions** (sandbox escapes, argument smuggling, symlink writes, code injection,
 SSRF ranges, env scrubbing, decode limits), the `.mcpb` manifest, the `.mcpb` zip
-extractor, and the MCP config files.
+extractor, the **skill package** (byte-identical rebuilds, a CRLF checkout hashing the
+same, refusal of junk/binary/symlinks, and drift detection between `skill/` and a
+packaged copy), and the MCP config files.
 
 ### Integration suite (`npm run e2e`)
 
@@ -770,6 +774,38 @@ archive still extracts with that version's manifest.
 demand for any past tag. The `.tgz` is checked for download integrity only: npm
 records the packer's line endings, so a tarball packed locally on another OS is
 legitimately different.
+
+### Packaging the agent skill
+
+```bash
+npm run skill:zip                        # dist-skill/playwright-e2e-mcp.zip
+npm run skill:check                      # build, then compare every copy
+npm run skill:check -- ../agensi-skill-0.2.2
+```
+
+`skill/` is an [Agent Skill](https://agentskills.io/specification) — the
+instructions an agent follows to drive this server — and the marketplace gets
+the same Markdown as a zip with `playwright-e2e-mcp/` at its root.
+`scripts/package-skill.mjs` produces that zip, so the uploaded copy is built
+rather than assembled by hand, and it refuses what the marketplace rejects: a
+missing `SKILL.md`, a non-text file, a symlink, `Thumbs.db`.
+
+The archive comes from the same deterministic writer as the `.mcpb`, so the
+same tree always hashes the same, and text payloads are LF-normalised first:
+a CRLF checkout builds the bytes an LF one does. CI runs `skill:check` and
+uploads the built zip as an artifact (`.github/workflows/ci.yml`).
+
+`skill:check` is the other half of that, and the part that matters when a
+package has already been uploaded. It builds twice (the bytes must agree),
+reads the archive back and compares its contents with `skill/` file by file,
+then compares a packaged copy — `../agensi-skill-<version>` by default, or a
+path you pass: the package folder, the bare `playwright-e2e-mcp/` folder, or
+the zip on its own. Comparisons are by content, never by archive bytes, because
+a zip written by a platform `zip` tool carries real timestamps that say nothing
+about whether the Markdown inside it is current. Any file that differs, is
+missing or is extra is named on stderr and the command exits 1 — the repository
+copy and the uploaded copy are the same document, so an edit to either one
+should not be invisible.
 
 ### Try the example
 

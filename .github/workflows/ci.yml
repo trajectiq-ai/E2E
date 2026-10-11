@@ -133,6 +133,34 @@ jobs:
           done
           echo "::notice title=mcpb::every platform produced the same bundle: $expected"
 
+  # The agent skill is packaged from `skill/` and uploaded to a marketplace, so
+  # the artifact and the source have to stay the same Markdown. This job builds
+  # it, and `skill:check` proves the build is byte-reproducible, holds exactly
+  # `skill/`, and names any file a packaged copy has drifted on.
+  skill:
+    name: agent skill package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build the package and check it against skill/
+        run: npm run skill:check
+      - name: Build the archive that gets uploaded
+        run: npm run skill:zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-skill-package
+          path: dist-skill/playwright-e2e-mcp.zip
+          if-no-files-found: error
+          retention-days: 7
+
   pack:
     name: npm pack dry run
     runs-on: ubuntu-latest

@@ -47,7 +47,7 @@ function sumsLine(hash, name) {
  * Build a release directory shaped like the real one, plus a separate
  * "rebuilt from the tag" bundle to compare it against.
  */
-function fixture({ tamperBundle = false, sumsHash = null, omitTgzFromSums = false, signed = null } = {}) {
+function fixture({ tamperBundle = false, sumsHash = null, omitTgzFromSums = false, signed = null, skill = null } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'verify-release-test-'));
   const release = path.join(root, 'release');
   const local = path.join(root, 'local');
@@ -68,11 +68,21 @@ function fixture({ tamperBundle = false, sumsHash = null, omitTgzFromSums = fals
   writeFileSync(path.join(release, 'SHA256SUMS.txt'), `${lines.join('\n')}\n`);
   writeFileSync(`${published}.sha256`, `${sha256(published)}  ${bundleName}\n`);
 
+  const skillName = `${pkg.name}-${pkg.version}-skill.zip`;
+  if (skill) {
+    const file = path.join(release, skillName);
+    writeFileSync(file, skill.bytes ?? Buffer.from('skill package bytes'));
+    if (skill.sidecar !== 'none') {
+      const hash = skill.sidecar === 'wrong' ? 'f'.repeat(64) : sha256(file);
+      writeFileSync(`${file}.sha256`, `${hash}  ${skillName}\n`);
+    }
+  }
+
   // Tamper last: this is a published file swapped after its checksums were
   // written, so every check that can catch it must.
   if (tamperBundle) writeFileSync(published, Buffer.concat([readFileSync(published), Buffer.from('tampered')]));
 
-  return { root, release, local, rebuilt, bundleName, tgzName, published };
+  return { root, release, local, rebuilt, bundleName, tgzName, published, skillName };
 }
 
 function run(input) {
@@ -204,6 +214,75 @@ test('a "signed" bundle whose block does not strip back to the rebuild fails', (
     );
     const failed = failedChecks(run({ dir: f.release, localBundle: f.rebuilt }));
     assert.ok(failed.some((name) => name.includes('unsigns back')), failed.join(' | '));
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('the skill package is optional on a tag that predates its publishing workflow', () => {
+  const f = fixture();
+  try {
+    // `requireSkillPackage` is false for a tag whose tree has no
+    // .github/workflows/publish-skill-package.yml, so its absence is not a
+    // failure — exactly like the signed bundle.
+    const result = run({ dir: f.release, localBundle: f.rebuilt });
+    assert.equal(result.checks.some((check) => check.name.includes('skill package')), false);
+    assert.deepEqual(failedChecks(result), []);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('a tag that carries the publishing workflow must have published the package', () => {
+  const f = fixture();
+  try {
+    const result = run({ dir: f.release, localBundle: f.rebuilt, requireSkillPackage: true });
+    const presence = result.checks.find((check) => check.name.includes(`publishes ${pkg.name}-${pkg.version}-skill.zip`));
+    assert.equal(presence?.ok, false);
+    assert.match(presence.detail, /re-run this workflow/);
+    assert.equal(failedChecks(result).length, 1, 'only the missing asset fails');
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('the published skill package is compared byte for byte with a rebuild', () => {
+  const bytes = Buffer.from('the deterministic archive');
+  const f = fixture({ skill: { bytes } });
+  try {
+    const result = run({ dir: f.release, localBundle: f.rebuilt, localSkillPackage: bytes, requireSkillPackage: true });
+    assert.deepEqual(failedChecks(result), []);
+    const identity = result.checks.find((check) => check.name.includes('skill package is byte-identical'));
+    assert.ok(identity?.ok);
+    assert.match(identity.detail, /published [0-9a-f]{64}/);
+    assert.match(identity.detail, /rebuilt  [0-9a-f]{64}/);
+    const sidecar = result.checks.find((check) => check.name.includes('skill package sidecar'));
+    assert.equal(sidecar?.ok, true);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('a published skill package that differs from the rebuild fails', () => {
+  const f = fixture({ skill: { bytes: Buffer.from('a hand-made package') } });
+  try {
+    const failed = failedChecks(
+      run({ dir: f.release, localBundle: f.rebuilt, localSkillPackage: Buffer.from('the deterministic archive') }),
+    );
+    assert.ok(failed.some((name) => name.includes('skill package is byte-identical')), failed.join(' | '));
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('a skill package sidecar that disagrees with the archive fails', () => {
+  const bytes = Buffer.from('the deterministic archive');
+  const f = fixture({ skill: { bytes, sidecar: 'wrong' } });
+  try {
+    const failed = failedChecks(
+      run({ dir: f.release, localBundle: f.rebuilt, localSkillPackage: bytes, requireSkillPackage: true }),
+    );
+    assert.deepEqual(failed, ['the skill package sidecar agrees with the published archive']);
   } finally {
     rmSync(f.root, { recursive: true, force: true });
   }

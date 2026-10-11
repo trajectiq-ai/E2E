@@ -769,8 +769,11 @@ The release notes promise that the tag rebuilds the published bundle byte for
 byte. `scripts/verify-release.mjs` checks that promise from a checkout of the
 tag: the published bundle against your fresh build, every checksum the release
 publishes (and that nothing shippable is missing from `SHA256SUMS.txt`), a
-**signed** bundle against the bytes its signature wraps, and that the published
-archive still extracts with that version's manifest.
+**signed** bundle against the bytes its signature wraps, the **skill package**
+against a rebuild from the same tag, and that the published archive still
+extracts with that version's manifest. The skill package is required of a tag
+whose tree carries the publishing workflow; older tags predate it, so there it
+is checked when present and skipped when not, like the signing certificate.
 `.github/workflows/verify-release.yml` runs it on every published release and on
 demand for any past tag. The `.tgz` is checked for download integrity only: npm
 records the packer's line endings, so a tarball packed locally on another OS is
@@ -806,6 +809,14 @@ same tree always hashes the same, and text payloads are LF-normalised first:
 a CRLF checkout builds the bytes an LF one does. CI runs `skill:check`, generates
 a package folder, and uploads the built zip as an artifact
 (`.github/workflows/ci.yml`).
+
+**Every release publishes the package too.**
+`.github/workflows/publish-skill-package.yml` builds it from the release tag,
+attaches it as `<name>-<version>-skill.zip` with a `.sha256` sidecar, and then
+downloads that asset back and byte-compares it with the build. The marketplace
+upload is that asset, not a folder someone assembled — a deterministic archive
+means "the same build as the tagged release" is an exact statement, and
+`release:verify` checks it again against a rebuild from the tag.
 
 `skill:check` is the other half of that, and the part that matters when a
 package has already been uploaded. It builds twice (the bytes must agree),

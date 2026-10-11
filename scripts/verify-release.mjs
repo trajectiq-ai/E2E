@@ -18,7 +18,15 @@
  *     SHA256SUMS.txt covers every asset the release publishes,
  *   - a published signed bundle, with its signature stripped, is byte-identical
  *     to the freshly built bundle (signing only appends a block),
+ *   - a published skill package is byte-identical to a rebuild from this tree
+ *     (the archive is deterministic, so this is an exact check, not a smoke
+ *     test) and agrees with its `.sha256` sidecar when one is published,
  *   - the published bundle still extracts and carries this version's manifest.
+ *
+ * The skill package is only *required* on a tag whose tree carries
+ * `.github/workflows/publish-skill-package.yml` — the workflow that attaches it.
+ * Older tags predate that, so there it is checked when present and skipped when
+ * not, exactly like the signed bundle.
  *
  * Exit code 0 means the release can be re-derived from the tag. The tarball is
  * checked for download integrity only: npm records the packer's line endings,
@@ -32,12 +40,24 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extractMcpb } from './extract-mcpb.mjs';
+import { buildSkillZip } from './package-skill.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cli = path.join(root, 'node_modules', '@anthropic-ai', 'mcpb', 'dist', 'cli', 'cli.js');
 
+/** The workflow that publishes the skill package; its presence at a tag is what
+ * makes the asset required of that release rather than optional. */
+const SKILL_PUBLISH_WORKFLOW = path.join('.github', 'workflows', 'publish-skill-package.yml');
+
 export function sha256File(file) {
   return createHash('sha256').update(readFileSync(file)).digest('hex');
+}
+
+/** Accepts either a path to a built archive or its bytes. */
+function hashOf(source) {
+  return Buffer.isBuffer(source)
+    ? createHash('sha256').update(source).digest('hex')
+    : sha256File(source);
 }
 
 /** Parse `sha256sum` output: `<hash>  <name>` or `<hash> *<name>`, `#` comments skipped. */
@@ -68,10 +88,11 @@ function runCli(args, cwd = root) {
 }
 
 /**
- * @param {{ tag: string, dir: string, localBundle: string, pkg?: { name: string, version: string } }} input
+ * @param {{ tag: string, dir: string, localBundle: string, localSkillPackage?: string | Buffer,
+ *           requireSkillPackage?: boolean, pkg?: { name: string, version: string } }} input
  * @returns {{ checks: {name: string, ok: boolean, detail?: string}[], failures: number }}
  */
-export function verifyRelease({ tag, dir, localBundle, pkg: packageJson }) {
+export function verifyRelease({ tag, dir, localBundle, localSkillPackage, requireSkillPackage = false, pkg: packageJson }) {
   const checks = [];
   const add = (name, ok, detail) => checks.push({ name, ok, detail });
 
@@ -168,6 +189,41 @@ export function verifyRelease({ tag, dir, localBundle, pkg: packageJson }) {
     }
   }
 
+  // The marketplace upload has to be the artifact this tree builds, so the
+  // published skill package is compared byte for byte — its writer is
+  // deterministic (sorted entries, one fixed timestamp, LF payloads), so this
+  // is an exact check rather than a smoke test.
+  const skillZipName = `${pkg.name}-${version}-skill.zip`;
+  const publishedSkill = path.join(dir, skillZipName);
+  const skillPresent = existsSync(publishedSkill);
+  if (requireSkillPackage || skillPresent) {
+    add(
+      `release publishes ${skillZipName}`,
+      skillPresent,
+      skillPresent
+        ? undefined
+        : `looked in ${dir}; if the publish job is still running, re-run this workflow`,
+    );
+  }
+  if (skillPresent && localSkillPackage !== undefined) {
+    const publishedHash = hashOf(publishedSkill);
+    const rebuiltHash = hashOf(localSkillPackage);
+    add(
+      'the published skill package is byte-identical to a rebuild from this tag',
+      hashesMatch(publishedHash, rebuiltHash),
+      `published ${publishedHash}\n             rebuilt  ${rebuiltHash}`,
+    );
+    const skillSidecar = `${publishedSkill}.sha256`;
+    if (existsSync(skillSidecar)) {
+      const line = parseChecksums(readFileSync(skillSidecar, 'utf8')).find((entry) => entry.name === skillZipName);
+      add(
+        'the skill package sidecar agrees with the published archive',
+        Boolean(line) && hashesMatch(line.hash, publishedHash),
+        line ? `sidecar says ${line.hash}` : 'no line for the skill package',
+      );
+    }
+  }
+
   // The published archive itself must still extract, with this version's manifest.
   const extractDir = mkdtempSync(path.join(os.tmpdir(), 'verify-release-extract-'));
   try {
@@ -222,10 +278,23 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       }
     }
 
-    const { checks, failures } = verifyRelease({ tag, dir, localBundle });
+    // The skill package is required of a tag that carries the workflow which
+    // publishes it; older tags predate it, so there it is optional.
+    const requireSkillPackage = existsSync(path.join(root, SKILL_PUBLISH_WORKFLOW));
+    const { checks, failures } = verifyRelease({
+      tag,
+      dir,
+      localBundle,
+      localSkillPackage: buildSkillZip(),
+      requireSkillPackage,
+    });
     for (const check of checks) {
       console.log(`${check.ok ? 'PASS' : 'FAIL'} ${check.name}`);
       if (check.detail) console.log(`     ${check.detail}`);
+    }
+    const skillZipName = `${pkg.name}-${pkg.version}-skill.zip`;
+    if (!requireSkillPackage && !existsSync(path.join(dir, skillZipName))) {
+      console.log(`--   no skill package expected: ${tag} predates ${SKILL_PUBLISH_WORKFLOW}`);
     }
     console.log(
       failures === 0

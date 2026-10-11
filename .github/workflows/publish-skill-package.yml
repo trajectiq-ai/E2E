@@ -1,0 +1,116 @@
+name: Publish skill package
+
+# The Agent Skill package goes to a marketplace by hand, so the file that gets
+# uploaded used to be whatever was on someone's disk — and that hand-made copy
+# had already drifted from `skill/` once. This builds it from the release tag
+# with the same deterministic writer as the bundle, checks it, and attaches it
+# to the release, so the upload comes from the artifact the release carries and
+# `verify-release.yml` can compare it with a rebuild from the same tag.
+#
+# Runs when a release is published (releases are created deliberately, after the
+# tag), and on demand to backfill a past tag.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish for (e.g. v0.2.2); empty means the latest release
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: attach the skill package to the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # upload the release asset
+    steps:
+      - name: Resolve the tag to publish for
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${INPUT_TAG:-${RELEASE_TAG:-}}"
+          if [ -z "$tag" ]; then
+            tag="$(gh release view --json tagName --jq .tagName)"
+          fi
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::'$tag' is not a release tag (expected v*)"; exit 1 ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "publishing the skill package for $tag"
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+
+      # Asset names carry the version, so a mismatch would publish a package
+      # under a version its contents do not belong to.
+      - name: Check the tag matches package.json
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          TAG=${TAG#refs/tags/}
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match package.json v$version"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      # Two builds of one tree must be the same bytes, and the archive must hold
+      # exactly `skill/`: this is what makes the asset below reproducible.
+      - name: Build and check the package from this tag
+        run: npm run skill:check
+
+      - name: Build the package folder
+        run: npm run skill:package -- --out dist-skill/package
+
+      - name: Attach the archive and its checksum to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          asset="${name}-${version}-skill.zip"
+          mkdir -p dist-skill/assets
+          cp "dist-skill/package/${name}.zip" "dist-skill/assets/${asset}"
+          (cd dist-skill/assets && sha256sum "$asset" > "${asset}.sha256")
+          gh release upload "$TAG" "dist-skill/assets/${asset}" "dist-skill/assets/${asset}.sha256" --clobber
+
+      # An upload that silently truncates would still look like success, so read
+      # the asset back off the release and compare it with what was built.
+      - name: Confirm the release carries exactly what was built
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          asset="${name}-${version}-skill.zip"
+          gh release download "$TAG" -p "$asset" -D dist-skill/downloaded --clobber
+          cmp "dist-skill/package/${name}.zip" "dist-skill/downloaded/${asset}"
+          {
+            echo "### Skill package published"
+            echo ""
+            echo "\`${asset}\` on \`$TAG\` is byte-identical to \`npm run skill:zip\` at that tag:"
+            echo ""
+            echo '```'
+            cat "dist-skill/assets/${asset}.sha256"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -10,6 +10,12 @@ name: Verify release
 # It checks the bundle against a fresh build, every checksum the release
 # publishes, a signed bundle against the bytes its signature wraps, and drives
 # the published file with the official MCP SDK client.
+#
+# A release assembled by `.github/workflows/release.yml` runs this check itself,
+# before it is published — and GitHub does not raise `release: published` for a
+# release created with the repository's own token, so for those this workflow is
+# the on-demand path rather than the trigger. It is still the check that runs by
+# itself for a release published by hand.
 
 on:
   release:

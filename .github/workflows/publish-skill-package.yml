@@ -7,10 +7,17 @@ name: Publish skill package
 # to the release, so the upload comes from the artifact the release carries and
 # `verify-release.yml` can compare it with a rebuild from the same tag.
 #
-# Runs when a release is published (releases are created deliberately, after the
-# tag), and on demand for any tag that carries the packaging tooling. A tag cut
-# before `npm run skill:package` existed cannot build a package at all — the
-# step below says so instead of failing inside npm.
+# `.github/workflows/release.yml` now does this as one step of assembling a
+# release, so this workflow is the on-demand repair: run it to add the package to
+# a release that is missing it, or to rebuild it for a tag whose release was
+# assembled some other way. It no longer runs on `release: published`, where it
+# would race the assembly that already attached the same bytes.
+#
+# The file stays in the tree on purpose: `verify-release.mjs` treats a published
+# skill package as required of any tag that carries it, so deleting it would
+# quietly stop checking that releases ship one. A tag cut before
+# `npm run skill:package` existed cannot build a package at all — the step below
+# says so instead of failing inside npm.
 #
 # Uploading a release asset needs `contents: write`, which this job requests for
 # itself. If the upload fails with "Resource not accessible by integration", the
@@ -18,8 +25,6 @@ name: Publish skill package
 # General → Workflow permissions → "Read and write".
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:

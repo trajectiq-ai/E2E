@@ -14,6 +14,10 @@ bundle.zip
 # Agent skill package (npm run skill:zip) — built from skill/, uploaded to the marketplace
 dist-skill/
 
+# Assembled release (npm run release:assemble) — staged assets, notes and the
+# copy downloaded back from GitHub
+dist-release/
+
 # npm pack output (uploaded as a release asset, never tracked)
 *.tgz
 

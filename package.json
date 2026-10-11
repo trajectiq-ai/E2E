@@ -55,6 +55,8 @@
     "skill:zip": "node scripts/package-skill.mjs build",
     "skill:package": "node scripts/package-skill.mjs package",
     "skill:check": "node scripts/package-skill.mjs check",
+    "release:assemble": "node scripts/assemble-release.mjs",
+    "release:publish": "node scripts/publish-release.mjs",
     "release:verify": "node scripts/verify-release.mjs",
     "prepublishOnly": "npm test"
   },

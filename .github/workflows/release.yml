@@ -1,0 +1,170 @@
+name: Assemble release
+
+# Pushing a release tag now assembles the whole release: the bundle, the signed
+# bundle, the npm tarball, the skill package, SHA256SUMS.txt and the notes.
+#
+# All of it used to be done by hand at release time — `npm run mcpb:sign`,
+# `npm pack`, `sha256sum`, then writing the notes out of what those commands
+# printed. Every number in the notes was retyped, and nothing compared the
+# bundle hash printed there with the bundle that shipped. The assembly is now a
+# script (`scripts/assemble-release.mjs`) and the notes are generated from the
+# files it staged, with the prose coming from `release-notes/<tag>.md` — written
+# and reviewed in the commit that bumps the version.
+#
+# The order is the point. The release is created as a **draft**, filled, then
+# read back off GitHub and compared byte for byte, then re-derived from the tag
+# by `verify-release.mjs`, and only then published. A failure at any step leaves
+# an unpublished draft instead of a public release with a missing asset.
+#
+# GitHub suppresses `release` events raised by the repository's own token, so
+# `verify-release.yml` does not run for a release this workflow publishes — the
+# verification is a step here instead, and that workflow stays the on-demand
+# path for any past tag.
+#
+# Signing uses the `MCPB_KEY` and `MCPB_CERT` repository secrets (the private
+# key PEM and the certificate PEM; the private key is never in the repository,
+# and no tool here ever prints it). Without those secrets the release is
+# assembled and published **unsigned** and the job says so, so a missing key
+# cannot block a release. Add them with:
+#
+#   gh secret set MCPB_KEY  --repo trajectiq-ai/E2E < ~/signing/key.pem
+#   gh secret set MCPB_CERT --repo trajectiq-ai/E2E < ~/signing/cert.pem
+#
+# Creating a release and uploading its assets needs `contents: write`, which
+# this job requests for itself. If that is refused with "Resource not accessible
+# by integration", the repository's default workflow permission is not the
+# problem — the job-level permission is: check Settings → Actions → General →
+# Workflow permissions, where "Read and write" is required for the token.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to assemble (e.g. v0.2.3)
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  assemble:
+    name: assemble, verify and publish the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # create the release, upload its assets, publish it
+    steps:
+      - name: Resolve the tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF: ${{ github.ref }}
+        run: |
+          tag="${INPUT_TAG:-${REF#refs/tags/}}"
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::'$tag' is not a release tag (expected v*)"; exit 1 ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "assembling $tag"
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          # Full history and tags: the notes list the commits in the release, and
+          # the reproduction recipe names the tag before it.
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+
+      # A tag cut before the assembly existed cannot be assembled: say which
+      # file is missing instead of failing inside npm, the same way the skill
+      # packaging job explains itself.
+      - name: Check this tag can be assembled
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          for file in scripts/assemble-release.mjs scripts/publish-release.mjs "release-notes/$TAG.md"; do
+            if [ ! -f "$file" ]; then
+              echo "::error::$TAG cannot assemble a release: $file is missing from this tree. Cut a release from a tree that carries the release assembly."
+              exit 1
+            fi
+          done
+
+      - run: npm ci
+
+      # The tag is the irreversible moment, so it has to pass the suite the
+      # repository runs on main before anything is built from it.
+      - name: Test the tag before building from it
+        run: npm test
+
+      - name: Build the bundle
+        run: npm run mcpb
+
+      - name: Pack the npm tarball
+        run: npm pack
+
+      # The private key is written to the runner's temp directory, never to the
+      # workspace, and never echoed.
+      - name: Stage the signing key
+        id: signing
+        env:
+          KEY: ${{ secrets.MCPB_KEY }}
+          CERT: ${{ secrets.MCPB_CERT }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/signing"
+          if [ -z "$KEY" ] || [ -z "$CERT" ]; then
+            echo "::notice title=signing::MCPB_KEY / MCPB_CERT are not set, so this release is assembled unsigned — no .signed.mcpb and no certificate. Add both secrets to sign it."
+            echo "dir=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          umask 077
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/signing/key.pem"
+          printf '%s\n' "$CERT" > "$RUNNER_TEMP/signing/cert.pem"
+          echo "dir=$RUNNER_TEMP/signing" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble the assets, their checksums and the notes
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          SIGNING: ${{ steps.signing.outputs.dir }}
+        run: |
+          args=(--tag "$TAG")
+          if [ -n "$SIGNING" ]; then
+            args+=(--key "$SIGNING/key.pem" --cert "$SIGNING/cert.pem")
+          fi
+          node scripts/assemble-release.mjs "${args[@]}"
+
+      # Draft first, then read every asset back off the release and compare it
+      # with the staged copy: a truncated upload only shows up here.
+      - name: Fill the draft release and read its assets back
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          node scripts/publish-release.mjs --tag "$TAG" \
+            --assets dist-release/assets \
+            --title-file dist-release/RELEASE_TITLE.txt \
+            --body-file dist-release/RELEASE_BODY.md \
+            --download dist-release/downloaded
+
+      # The same script anyone can run against a checkout of the tag, on the
+      # assets the release actually serves.
+      - name: Re-derive the release from this tag
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: node scripts/verify-release.mjs "$TAG" --dir dist-release/downloaded
+
+      # Publishing is its own call, made only once the release above matches the
+      # tag. Nothing before this step is public.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: node scripts/publish-release.mjs --tag "$TAG" --publish

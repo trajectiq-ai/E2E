@@ -758,6 +758,59 @@ but not third-party identity. A certificate issued by a public CA, or an
 internal one installed on your machines, is what makes hosts report it as
 signed.
 
+### Assembling a release
+
+```bash
+npm run mcpb && npm pack                  # the bundle, then the npm tarball
+npm run release:assemble -- --tag v0.2.3  # sign, checksum and write the notes
+npm run release:publish -- --tag v0.2.3 --assets dist-release/assets \
+  --title-file dist-release/RELEASE_TITLE.txt \
+  --body-file dist-release/RELEASE_BODY.md --download dist-release/downloaded
+npm run release:verify -- v0.2.3 --dir dist-release/downloaded
+npm run release:publish -- --tag v0.2.3 --publish
+```
+
+Pushing a `v*` tag runs exactly that sequence in
+`.github/workflows/release.yml`. The release used to be assembled by hand, and
+the notes were written from what those commands printed: every hash in them was
+a copy, and nothing compared the bundle hash printed there with the bundle that
+shipped.
+
+`scripts/assemble-release.mjs` stages the whole release into
+`dist-release/assets/`: the bundle and its sidecar, the **signed** bundle and the
+signing certificate when a key is configured, the npm tarball, the skill package
+built by the same writer as `npm run skill:zip`, and `SHA256SUMS.txt` covering
+every file it staged. It empties that directory first, so a file left over from
+an earlier run cannot be hashed and published as if this run had produced it.
+
+The notes are half written, half generated. `release-notes/<tag>.md` holds the
+prose — its H1 becomes the release title and has to name the tag — and the script
+appends the asset table, the reproduction recipe carrying the real bundle hash,
+the signer and fingerprint, and the commit list. The prose is held to the same
+rule: a 64-character hex string in it has to be a hash this release publishes,
+and writing an `### Assets` section of your own fails the assembly rather than
+shipping a second, staler table. See [release-notes/README.md](release-notes/README.md).
+
+`scripts/publish-release.mjs` fills the release **as a draft**, uploads the
+assets, downloads every one of them back and compares it byte for byte, and only
+`--publish` makes it public — after `release:verify` has re-derived the release
+from the tag. Re-running is safe: a draft this workflow assembled is refreshed in
+place, while a release it did not assemble, or one already published, is refused
+by name instead of overwritten.
+
+Signing is optional and its absence is stated rather than hidden: without the
+`MCPB_KEY` and `MCPB_CERT` repository secrets the release is assembled and
+published **unsigned**, with a notice in the run and a line saying so in the
+notes. Add both — the private key stays out of the repository and out of the logs:
+
+```bash
+gh secret set MCPB_KEY  --repo trajectiq-ai/E2E < ~/signing/key.pem
+gh secret set MCPB_CERT --repo trajectiq-ai/E2E < ~/signing/cert.pem
+```
+
+Creating the release and uploading its assets needs `contents: write`, which the
+job requests for itself; if it is refused, the run names the setting to change.
+
 ### Verifying a published release
 
 ```bash
@@ -774,8 +827,12 @@ against a rebuild from the same tag, and that the published archive still
 extracts with that version's manifest. The skill package is required of a tag
 whose tree carries the publishing workflow; older tags predate it, so there it
 is checked when present and skipped when not, like the signing certificate.
-`.github/workflows/verify-release.yml` runs it on every published release and on
-demand for any past tag. The `.tgz` is checked for download integrity only: npm
+`.github/workflows/verify-release.yml` runs it on demand for any past tag, and by
+itself for a release published by hand. A release assembled by
+`.github/workflows/release.yml` runs the same check on its own assets *before*
+it is published — GitHub does not raise `release: published` for a release created
+with the repository's own token, so the check is a step there rather than a
+trigger. The `.tgz` is checked for download integrity only: npm
 records the packer's line endings, so a tarball packed locally on another OS is
 legitimately different.
 
@@ -810,13 +867,15 @@ a CRLF checkout builds the bytes an LF one does. CI runs `skill:check`, generate
 a package folder, and uploads the built zip as an artifact
 (`.github/workflows/ci.yml`).
 
-**Every release publishes the package too.**
-`.github/workflows/publish-skill-package.yml` builds it from the release tag,
-attaches it as `<name>-<version>-skill.zip` with a `.sha256` sidecar, and then
-downloads that asset back and byte-compares it with the build. The marketplace
+**Every release publishes the package too.** Assembling a release builds it from
+the release tag and attaches it as `<name>-<version>-skill.zip`, and the
+`.github/workflows/release.yml` run downloads that asset back off the draft and
+byte-compares it with the build before anything is published. The marketplace
 upload is that asset, not a folder someone assembled — a deterministic archive
 means "the same build as the tagged release" is an exact statement, and
 `release:verify` checks it again against a rebuild from the tag.
+`.github/workflows/publish-skill-package.yml` stays for the repair path: run it
+by hand to attach or rebuild the package for a release that is missing it.
 
 `skill:check` is the other half of that, and the part that matters when a
 package has already been uploaded. It builds twice (the bytes must agree),

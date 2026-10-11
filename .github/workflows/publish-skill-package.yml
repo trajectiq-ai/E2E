@@ -8,7 +8,14 @@ name: Publish skill package
 # `verify-release.yml` can compare it with a rebuild from the same tag.
 #
 # Runs when a release is published (releases are created deliberately, after the
-# tag), and on demand to backfill a past tag.
+# tag), and on demand for any tag that carries the packaging tooling. A tag cut
+# before `npm run skill:package` existed cannot build a package at all — the
+# step below says so instead of failing inside npm.
+#
+# Uploading a release asset needs `contents: write`, which this job requests for
+# itself. If the upload fails with "Resource not accessible by integration", the
+# repository is set to read-only workflow permissions: Settings → Actions →
+# General → Workflow permissions → "Read and write".
 
 on:
   release:
@@ -70,6 +77,17 @@ jobs:
             exit 1
           fi
 
+      # A tag cut before the packaging tooling existed has no package to build;
+      # say that plainly instead of failing inside npm with a missing script.
+      - name: Check this tag can build a package
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if [ ! -f scripts/package-skill.mjs ]; then
+            echo "::error::$TAG predates the skill packaging tooling, so its tree cannot build a package. Cut a release from a tree that has npm run skill:package to publish one."
+            exit 1
+          fi
+
       - run: npm ci
 
       # Two builds of one tree must be the same bytes, and the archive must hold
@@ -91,7 +109,13 @@ jobs:
           mkdir -p dist-skill/assets
           cp "dist-skill/package/${name}.zip" "dist-skill/assets/${asset}"
           (cd dist-skill/assets && sha256sum "$asset" > "${asset}.sha256")
-          gh release upload "$TAG" "dist-skill/assets/${asset}" "dist-skill/assets/${asset}.sha256" --clobber
+          if ! gh release upload "$TAG" "dist-skill/assets/${asset}" "dist-skill/assets/${asset}.sha256" --clobber 2> upload.err; then
+            cat upload.err >&2
+            if grep -qi "Resource not accessible" upload.err; then
+              echo "::error::the workflow token cannot write to releases - set Settings -> Actions -> General -> Workflow permissions to 'Read and write', then re-run this workflow"
+            fi
+            exit 1
+          fi
 
       # An upload that silently truncates would still look like success, so read
       # the asset back off the release and compare it with what was built.

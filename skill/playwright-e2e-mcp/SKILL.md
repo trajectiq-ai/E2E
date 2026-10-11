@@ -1,6 +1,6 @@
 ---
 name: playwright-e2e-mcp
-description: Runs, debugs and fixes Playwright end-to-end tests through the playwright-e2e-mcp server, using structured run results, trace-based failure diagnostics, live DOM inspection and selector validation. Use when the user asks to run Playwright tests, fix a failing or broken e2e test, find out why a test is flaky, repair a selector that no longer matches, write a new Playwright test, or check a page for visual regressions.
+description: Runs, debugs and fixes Playwright end-to-end tests through the playwright-e2e-mcp server, using structured run results, trace-based failure diagnostics, verified locators, self-healing fixes that re-run and revert if still red, signed-in page inspection and local run history. Use when the user asks to run Playwright tests, fix a failing or broken e2e test, find out why a test is flaky or which tests are unstable, repair a selector that no longer matches, write a new Playwright test, or check a page for visual regressions.
 ---
 
 # Playwright E2E with playwright-e2e-mcp
@@ -9,7 +9,13 @@ This skill drives the `playwright-e2e-mcp` MCP server. The server runs Playwrigh
 for you and returns structured results instead of raw terminal output: pass/fail
 stats, each failure with `file:line`, a failure kind, the DOM at the moment of
 failure (read from the Playwright trace), failed network requests, console errors
-and concrete next steps.
+and concrete next steps. It can also propose and apply a verified fix for a broken
+locator, inspect pages behind a login, run long suites in the background and keep
+a local history of every run.
+
+This skill needs playwright-e2e-mcp 0.2.0 or newer. If `suggest-fix`,
+`get-run-status` or `analyze-history` is missing, the server is an older version:
+use the steps that do not need those tools and tell the user to update it.
 
 ## Before you start
 
@@ -21,9 +27,12 @@ and concrete next steps.
 2. If they are missing, stop and tell the user the MCP server is not connected.
    Point them to `references/setup.md` for the one-line install for their client.
    Do not fall back to shelling out to `npx playwright test` unless the user asks.
-3. Every tool takes an optional `projectRoot`. Leave it out unless the user works
-   in a sub-project; the server defaults to `PW_MCP_PROJECT_ROOT` or its working
+3. Every tool except `get-run-status` takes an optional `projectRoot`. Leave it
+   out unless the user works in a sub-project; the server defaults to `PW_MCP_PROJECT_ROOT` or its working
    directory, and rejects any root outside its allowed roots.
+4. If the client offers the server's prompts as slash commands,
+   `/fix-failing-test` and `/triage-flaky-tests` start the two main workflows
+   below.
 
 ## The core loop: fix a failing test
 
@@ -75,6 +84,25 @@ Follow these steps in order. Do not edit code before step 3.
    comes back `✅ VALID` with exactly 1 match.
 4. Update the spec and re-run with `lastFailed: true`.
 
+## Pages behind a login
+
+`inspect-page`, `validate-selector` and `compare-visual-state` open the page in a
+fresh browser, so a signed-in page shows the login screen unless you pass state:
+
+- `storageState`: path inside the project to a Playwright storageState JSON, such
+  as `playwright/.auth/user.json` written by the project's setup project. Look for
+  it in `playwright.config.*` before asking the user. The server can default to
+  `PW_MCP_STORAGE_STATE`.
+- `headers`: extra HTTP headers, e.g. an API token the user gave you. Never invent
+  or log credentials.
+- `actions`: up to 20 steps after load (`click`, `fill`, `press`, `check`,
+  `select`, `hover`, `wait`, `goto`, ...) to open a modal or reach a later step.
+- `viewport`: `{ "width": 390, "height": 844 }` for mobile layouts.
+
+When a response says the page landed on a login screen, retry with
+`storageState`. `suggest-fix` takes `storageState` and `headers` too when you heal
+against a live `url`.
+
 ## Flaky or intermittent failures
 
 Start with `analyze-history` (default view `flaky`) to see which tests flip
@@ -92,7 +120,13 @@ disabled and returns one verdict:
   sleeps.
 - **NOT REPRODUCING**: passed every run. Report that the failure was one-off.
 
-`get-failure` works on the last diagnose run straight after.
+`get-failure` works on the last diagnose run straight after. If there is little
+history yet, collect some first with `run-test` and `args: ["--repeat-each=5"]`.
+
+Every `run-test`, `diagnose-flaky` and `suggest-fix` run is recorded in
+`<project>/.playwright-e2e-mcp/history.jsonl` on the user's machine;
+`analyze-history` with `view: "test"` and a `test` filter shows one test's
+pass/fail timeline.
 
 ## Other tasks
 
@@ -121,6 +155,8 @@ When you finish, tell the user, in this order:
 - Do not raise timeouts, add retries, add `waitForTimeout`, or delete or
   `test.skip` a test to make a run green, unless the user explicitly asks.
 - Do not accept a new visual baseline without the user's confirmation.
+- Do not pass `allowExpectationUpdate: true` to `suggest-fix` unless the user
+  confirms the new text is intended; a changed expected value can be a real bug.
 - Do not point `inspect-page` or `validate-selector` at sites the user did not
   name; they open real pages in a headless browser.
 - `run-test` executes the project's own test code. Run it only in projects the
@@ -131,4 +167,5 @@ When you finish, tell the user, in this order:
 - `references/setup.md`: install and client configuration, environment variables.
 - `references/tools.md`: every tool's arguments.
 - `references/failure-kinds.md`: failure kinds and error codes, and what to do.
-- `references/example-session.md`: a worked fix-a-failing-test session.
+- `references/example-session.md`: a worked fix-a-failing-test session with
+  `suggest-fix`.

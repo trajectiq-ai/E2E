@@ -1,7 +1,7 @@
 # Tool reference
 
-All paths are relative to the project root. Every tool accepts an optional
-`projectRoot`, which must sit inside the server's allowed roots.
+All paths are relative to the project root. Every tool except `get-run-status`
+accepts an optional `projectRoot`, which must sit inside the server's allowed roots.
 
 ## run-test
 
@@ -12,6 +12,7 @@ Runs Playwright and returns stats, failures, failure kinds and fix hints.
 | `testFiles` | string[] | Files or directories; `file:line` supported. Omit to run everything |
 | `grep` | string | Only tests whose title matches this regex |
 | `browser` | `chromium` \| `firefox` \| `webkit` | Matched against config project names |
+| `background` | boolean | Return a run id at once and keep running; follow it with `get-run-status` |
 | `headed` | boolean | Visible browser window |
 | `timeoutMs` | number | Wall-clock limit for the run (default 120000); partial results are returned past it |
 | `testTimeoutMs` | number | Per-test timeout |
@@ -22,6 +23,7 @@ Runs Playwright and returns stats, failures, failure kinds and fix hints.
 | `args` | string[] | Allowlisted Playwright flags such as `--repeat-each=N`, `--max-failures=N`, `--update-snapshots`, `--shard=1/3`, `--trace=on`; path-taking flags are rejected |
 
 Traces are captured on failure automatically so `get-failure` can show the DOM.
+Clients that send a progress token get live progress while the run goes.
 
 ## get-failure
 
@@ -44,9 +46,9 @@ its selector, failed network requests, console errors and warnings, and next ste
 | `includeHtml` | boolean | Include rendered HTML (capped by `maxHtmlChars`, default 20000) |
 | `timeoutMs` | number | Default 45000 |
 | `view` | `elements` \| `locators` | `locators`: compact map of interactive elements with verified locators |
-| `storageState` | string | Playwright storageState JSON inside the project (signed-in session) |
+| `storageState` | string | Playwright storageState JSON inside the project (signed-in session); defaults to `PW_MCP_STORAGE_STATE` |
 | `headers` | object | Extra HTTP headers |
-| `actions` | array | Up to 20 steps after load: `{ type: click\|fill\|press\|check\|select\|hover\|wait\|goto…, locator?, value?, url?, ms? }` |
+| `actions` | array | Up to 20 steps after load: `{ type: click\|dblclick\|fill\|press\|check\|uncheck\|select\|hover\|wait\|goto, locator?, value?, url?, ms? }` |
 | `viewport` | object | `{ width, height }` |
 
 Returns each element's Playwright locators proven unique on the page (role +
@@ -127,8 +129,10 @@ Runs with retries disabled and returns `CONSISTENTLY FAILING`, `FLAKY` or
 | `url`, `storageState`, `headers` | | Heal against a live page instead of the trace snapshot |
 | `config`, `timeoutMs` | | As `run-test` |
 
-Returns a unified diff with confidence `high` or `medium`, or refuses and says the
-element is most likely missing.
+Returns a unified diff: a locator fix rated `high` or `medium` confidence, or an
+expectation update rated `low` that is applied only with
+`allowExpectationUpdate: true`. Otherwise it refuses and says the element is most
+likely missing.
 
 ## get-run-status
 

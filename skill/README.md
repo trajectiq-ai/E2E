@@ -2,8 +2,10 @@
 
 `playwright-e2e-mcp/` is an [Agent Skill](https://agentskills.io/specification)
 that teaches an agent when and how to use this repo's MCP server: the run, read
-the failure, inspect, validate, fix and re-run loop, flaky-test diagnosis,
-test generation and visual comparison. It works with any agent that reads
+the failure, inspect, validate, fix and re-run loop, self-healing fixes with
+`suggest-fix`, signed-in page inspection, background runs, run-history triage,
+flaky-test diagnosis, test generation and visual comparison. It targets
+playwright-e2e-mcp 0.2.0 or newer. It works with any agent that reads
 `SKILL.md` skills (Claude Code, Codex CLI, OpenClaw and others) once the MCP
 server is connected.
 

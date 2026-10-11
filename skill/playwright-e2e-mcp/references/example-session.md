@@ -13,28 +13,41 @@
    ```
 
 2. Agent calls `get-failure` with `{ "index": 1 }`. The failed action is
-   `locator('#pay-now').click()`, and the DOM snapshot at failure shows a
-   `<button data-testid="checkout-submit">Pay now</button>` and no `#pay-now`.
-   No network requests failed.
+   `locator('#pay-now').click()`. The DOM snapshot at failure has no `#pay-now`,
+   but it does have a `Pay now` button. No network requests failed and the console
+   is clean, so the app itself looks healthy.
 
-3. The failure kind is `timeout`, but the cause is a selector that no longer
-   matches, so the agent follows the selector loop. It calls `inspect-page` with
-   `{ "url": "http://localhost:3000/checkout", "selector": "form button" }` and
-   confirms the button's attributes.
+3. The failure kind is `timeout`, but the cause is a locator that no longer
+   matches, so the agent calls `suggest-fix` with `{ "index": 1 }`:
 
-4. Agent calls `validate-selector` with
-   `{ "url": "http://localhost:3000/checkout", "selector": "[data-testid=\"checkout-submit\"]" }`
-   and gets `✅ VALID — 1 match`.
+   ```
+   ### Proposed locator fix — confidence **high**
+   The button's accessible name matches "pay", and
+   `getByRole('button', { name: 'Pay now' })` is proven to resolve to exactly
+   that element.
+   -  await page.locator('#pay-now').click();
+   +  await page.getByRole('button', { name: 'Pay now' }).click();
+   ```
 
-5. Agent edits `tests/checkout.spec.ts:18` to
-   `await page.getByTestId('checkout-submit').click();`.
+4. Confidence is high, so the agent calls `suggest-fix` with
+   `{ "index": 1, "apply": true }`. The server writes the change, re-runs the test
+   with retries off, and reports `✅ Verified — the test passes with the fix`.
+   Had the test still failed, the server would have restored the original file.
 
-6. Agent calls `run-test` with `{ "lastFailed": true }` and gets `✅ PASSED`.
+5. Agent calls `run-test` with `{ "lastFailed": true }` to confirm, then
+   `{ "testFiles": ["tests/checkout.spec.ts"] }` for the whole file: 3 passed.
 
 **Agent's reply:**
 
-> All 3 checkout tests pass now. The "pays with card" test failed because the
-> redesign renamed the pay button: `#pay-now` became
-> `data-testid="checkout-submit"`. I updated the locator at
-> `tests/checkout.spec.ts:18` to `getByTestId('checkout-submit')`, checked it
-> matches exactly one element on the live page, and re-ran the test.
+> All 3 checkout tests pass now. "pays with card" failed because the redesign
+> removed the `#pay-now` id from the pay button. I changed the locator at
+> `tests/checkout.spec.ts:18` to `getByRole('button', { name: 'Pay now' })`,
+> which matches exactly one element, and the server re-ran the test to confirm
+> the fix.
+
+## When suggest-fix refuses
+
+If `suggest-fix` says the element is most likely missing, do not weaken the test.
+Read `get-failure` again for failed network requests and console errors, check the
+page with `inspect-page` (with `storageState` if it needs a login), and report it
+to the user as a probable app bug with that evidence.

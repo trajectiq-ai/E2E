@@ -5,6 +5,10 @@ This skill only gives the agent instructions. The tools come from the
 
 ## Requirements
 
+- playwright-e2e-mcp **0.2.0 or newer**. `suggest-fix`, `get-run-status`,
+  `analyze-history`, verified locators and signed-in page inspection arrived in
+  0.2.0. Check with `npx -y playwright-e2e-mcp --version`.
+
 - Node.js 20 or newer.
 - A project with `@playwright/test` installed and a browser available:
   `npx playwright install chromium`.
@@ -72,6 +76,8 @@ Set these in the server's `env` block. None of them are secrets except
 | `PW_MCP_PROJECT_ROOT` | server working directory | Default project root for every tool |
 | `PW_MCP_ALLOWED_ROOTS` | none | Extra directories allowed as `projectRoot` (`:`-separated, `;` on Windows) |
 | `PW_MCP_BLOCK_PRIVATE_URLS` | off for stdio | `1` makes the URL tools refuse loopback, private-network and cloud-metadata addresses |
+| `PW_MCP_STORAGE_STATE` | none | Default Playwright storageState JSON (inside the project) for the page tools, so signed-in pages open logged in |
+| `PW_MCP_HISTORY` | on | `0` stops recording runs to `<project>/.playwright-e2e-mcp/history.jsonl` (this turns off `analyze-history`) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` or `silent` |
 | `PW_MCP_HTTP_TOKEN` | none | HTTP bridge only: bearer token that unlocks all tools |
 
@@ -79,11 +85,12 @@ Set these in the server's `env` block. None of them are secrets except
 
 Clients that only accept remote MCP servers can use the Streamable HTTP bridge
 (`https://playwright-e2e-mcp.vercel.app/api/mcp`, or your own deployment of the
-repo). Without a bearer token the bridge serves only `list-tests` and
-`get-failure`, so the core loop in `SKILL.md` needs a local install or a token.
+repo). Without a bearer token the bridge serves only `list-tests`,
+`get-failure` and `analyze-history`, so the core loop in `SKILL.md` needs a local install or a token.
 
 ## Check it works
 
 Ask the agent to "list my Playwright tests". It should call `list-tests` and
-return files and titles. If it says the tools are missing, the server is not
+return files and titles. Clients that show MCP prompts also list
+`/fix-failing-test` and `/triage-flaky-tests`. If it says the tools are missing, the server is not
 connected: restart the client after editing its config.

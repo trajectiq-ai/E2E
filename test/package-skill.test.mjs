@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -206,4 +206,69 @@ test('the CLI builds, and fails with the file names when copies disagree', (t) =
 
   const usage = runCli(['nonsense']);
   assert.equal(usage.status, 2, 'an unknown command is a usage error');
+});
+
+test('package writes the versioned folder and verifies what it wrote', (t) => {
+  const dir = scratch(t);
+  const target = path.join(dir, 'agensi-skill-0.2.2');
+  const written = runCli(['package', '--out', target]);
+  assert.equal(written.status, 0, written.stderr);
+  assert.match(written.stdout, /verified {2}matches skill\/ file by file, archive included/);
+  assert.match(written.stdout, /upload {4}.*playwright-e2e-mcp\.zip to the marketplace/);
+
+  // Exactly the layout the marketplace reads, and nothing else.
+  const expected = [
+    'README.md',
+    ...listTree(skillDir).map((rel) => `${SKILL_NAME}/${rel}`),
+    `${SKILL_NAME}.zip`,
+  ];
+  assert.deepEqual(listTree(target), expected);
+  assert.deepEqual(readFileSync(path.join(target, `${SKILL_NAME}.zip`)), buildSkillZip(), 'the archive is the deterministic build');
+  assert.deepEqual(readTree(path.join(target, SKILL_NAME)), readTree(skillDir), 'the skill copy is the repository copy');
+  assert.deepEqual(differencesInPackage(target), [], 'the generated folder satisfies the check');
+  assert.equal(runCli(['check', target]).status, 0, 'and `check` agrees');
+});
+
+test('package leaves a folder that already matches untouched', (t) => {
+  const dir = scratch(t);
+  const target = path.join(dir, 'agensi-skill-0.2.2');
+  assert.equal(runCli(['package', '--out', target]).status, 0);
+
+  // A published package must not be rewritten by an idempotent run, so pin the
+  // mtime and prove it survives.
+  const pinned = new Date(1_600_000_000_000);
+  const readme = path.join(target, 'README.md');
+  utimesSync(readme, pinned, pinned);
+  const again = runCli(['package', '--out', target]);
+  assert.equal(again.status, 0, again.stderr);
+  assert.match(again.stdout, /already matches skill\/ — nothing to write/);
+  assert.equal(statSync(readme).mtimeMs, pinned.getTime(), 'nothing was rewritten');
+});
+
+test('package refuses to replace a drifted folder unless --force', (t) => {
+  const dir = scratch(t);
+  const target = path.join(dir, 'agensi-skill-0.2.2');
+  assert.equal(runCli(['package', '--out', target]).status, 0);
+
+  const stale = path.join(target, SKILL_NAME, 'references', 'tools.md');
+  writeFileSync(stale, '# stale copy\n');
+
+  const refused = runCli(['package', '--out', target]);
+  assert.equal(refused.status, 1, 'an existing folder that differs is not replaced');
+  assert.match(refused.stderr, /references\/tools\.md differs from skill\//);
+  assert.match(refused.stderr, /bump the version for a new package, or pass --force/);
+  assert.equal(readFileSync(stale, 'utf8'), '# stale copy\n', 'the drifted file is still there');
+
+  const forced = runCli(['package', '--out', target, '--force']);
+  assert.equal(forced.status, 0, forced.stderr);
+  assert.match(forced.stdout, /replacing .* \(--force\)/);
+  assert.deepEqual(differencesInPackage(target), [], 'the replacement matches skill/');
+});
+
+test('package rejects bad arguments instead of writing somewhere unexpected', (t) => {
+  const dir = scratch(t);
+  assert.equal(runCli(['package', '--out']).status, 2, '--out without a directory');
+  assert.equal(runCli(['package', '--wat']).status, 2, 'an unknown option');
+  assert.equal(runCli(['package', path.join(dir, 'here')]).status, 2, 'a stray positional argument');
+  assert.deepEqual(listTree(dir), [], 'nothing was written');
 });

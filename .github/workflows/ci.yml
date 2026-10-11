@@ -152,6 +152,8 @@ jobs:
       - run: npm ci
       - name: Build the package and check it against skill/
         run: npm run skill:check
+      - name: Generate a package folder from skill/
+        run: npm run skill:package -- --out dist-skill/agensi-skill-package
       - name: Build the archive that gets uploaded
         run: npm run skill:zip
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

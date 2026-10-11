@@ -8,8 +8,15 @@
  * has those rules, and this script is what produces the artifact:
  *
  *   npm run skill:zip                        → dist-skill/playwright-e2e-mcp.zip
+ *   npm run skill:package                    → ../agensi-skill-<version>/, ready to upload
  *   npm run skill:check                      → build, then compare every copy
  *   npm run skill:check -- ../agensi-skill-0.2.2
+ *
+ * `package` writes the folder a release would otherwise assemble by hand — the
+ * skill copy, its README and the archive — and verifies it with the same
+ * comparison `check` uses. An existing folder is left alone unless it matches
+ * (idempotent) or `--force` says to replace it, so a published package cannot be
+ * overwritten by accident.
  *
  * `check` reports the file names whenever a packaged copy has drifted from
  * `skill/`. That drift is not hypothetical: the repository copy and the package
@@ -176,10 +183,41 @@ export function differencesInPackage(target) {
   return sortDifferences(differences);
 }
 
+/**
+ * Where a package for this version belongs: the folder `agensi-skill-<version>`
+ * beside the checkout, which is where `check` looks for one by default.
+ */
+export function versionedPackageDir() {
+  return path.resolve(root, '..', `agensi-skill-${pkg.version}`);
+}
+
 /** The marketplace copy for the version this checkout is on, if it is there. */
 export function defaultTarget() {
-  const candidate = path.resolve(root, '..', `agensi-skill-${pkg.version}`);
+  const candidate = versionedPackageDir();
   return existsSync(candidate) ? candidate : undefined;
+}
+
+/** The files a generated package holds, as they will be written. */
+function packageContents() {
+  const files = new Map();
+  for (const rel of listTree(skillDir)) {
+    files.set(`${SKILL_NAME}/${rel}`, normalise(readFileSync(path.join(skillDir, rel))));
+  }
+  files.set('README.md', normalise(readFileSync(path.join(skillRoot, 'README.md'))));
+  return { files, zip: buildSkillZip() };
+}
+
+/** Write a package folder: the skill copy, its README, and the archive to upload. */
+export function writeSkillPackage(target) {
+  const resolved = path.resolve(target);
+  const { files, zip } = packageContents();
+  for (const [rel, data] of files) {
+    const dest = path.join(resolved, rel);
+    mkdirSync(path.dirname(dest), { recursive: true });
+    writeFileSync(dest, data);
+  }
+  writeFileSync(path.join(resolved, `${SKILL_NAME}.zip`), zip);
+  return { target: resolved, files: files.size, zip, sha256: sha256(zip) };
 }
 
 /**
@@ -228,13 +266,19 @@ function sha256(buf) {
   return createHash('sha256').update(buf).digest('hex');
 }
 
+/** Relative when the path is inside the checkout, absolute when it is not. */
+function displayPath(target) {
+  const relative = path.relative(root, target);
+  return relative && !relative.startsWith('..') ? relative : target;
+}
+
 function report(result) {
   if (result.problems.length) result.problems.forEach((problem) => console.error(`  FAIL ${problem}`));
   else console.log(`  OK   the build is byte-reproducible and holds exactly skill/ (${result.files.length} files)`);
 
   for (const { detail } of result.differences) console.error(`  FAIL ${detail}`);
 
-  const target = result.target ? path.relative(root, result.target) || result.target : undefined;
+  const target = result.target ? displayPath(result.target) : undefined;
   if (!result.target) {
     console.log(
       `  --   no packaged copy to compare (looked for ../agensi-skill-${pkg.version}); ` +
@@ -255,10 +299,68 @@ function main(argv) {
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, zip);
     const files = skillEntries().map((entry) => entry.name.replace(`${SKILL_NAME}/`, ''));
-    console.log(`package-skill: wrote ${path.relative(root, target) || target} (${files.length} files, ${(zip.length / 1024).toFixed(1)} KB)`);
+    console.log(`package-skill: wrote ${displayPath(target)} (${files.length} files, ${(zip.length / 1024).toFixed(1)} KB)`);
     console.log(`  sha256    ${sha256(zip)}`);
     console.log(`  contents  ${SKILL_NAME}/ (${files.join(', ')})`);
     console.log('  upload this archive to the marketplace; SKILL.md sits at its root.');
+    return 0;
+  }
+
+  if (command === 'package') {
+    const force = rest.includes('--force');
+    const args = rest.filter((arg) => arg !== '--force');
+    const outIndex = args.indexOf('--out');
+    let target = versionedPackageDir();
+    if (outIndex !== -1) {
+      const dir = args[outIndex + 1];
+      if (!dir || dir.startsWith('-')) {
+        console.error('package-skill: --out needs a directory');
+        return 2;
+      }
+      target = path.resolve(dir);
+      args.splice(outIndex, 2);
+    }
+    // A typo here builds a package in the wrong place, so refuse anything left.
+    const leftover = args.filter((arg) => arg.length > 0);
+    if (leftover.length) {
+      console.error(`package-skill: unexpected argument(s): ${leftover.join(', ')}`);
+      return 2;
+    }
+
+    const display = displayPath(target);
+    if (existsSync(target)) {
+      const existing = differencesInPackage(target);
+      if (existing.length === 0) {
+        console.log(`package-skill: ${display} already matches skill/ — nothing to write`);
+        console.log(`  upload    ${path.join(display, `${SKILL_NAME}.zip`)}`);
+        return 0;
+      }
+      if (!force) {
+        existing.forEach((difference) => console.error(`  FAIL ${difference.detail}`));
+        console.error(
+          `package-skill: ${display} exists and differs from skill/ in ${existing.length} place(s) —\n` +
+            '  bump the version for a new package, or pass --force to replace this one',
+        );
+        return 1;
+      }
+      console.log(`package-skill: replacing ${display} (--force)`);
+    }
+
+    const written = writeSkillPackage(target);
+    // Verify what was just written with the same comparison `check` uses, so a
+    // successful exit means the folder really is the skill tree.
+    const differences = differencesInPackage(written.target);
+    if (differences.length) {
+      differences.forEach((difference) => console.error(`  FAIL ${difference.detail}`));
+      console.error('package-skill: the folder just written does not match skill/ — this is a bug');
+      return 1;
+    }
+
+    console.log(`package-skill: wrote ${display} (${written.files} files + archive, ${(written.zip.length / 1024).toFixed(1)} KB)`);
+    console.log(`  sha256    ${written.sha256}`);
+    console.log(`  contents  ${display}/${SKILL_NAME}/ (${written.files - 1} files), ${display}/README.md, ${display}/${SKILL_NAME}.zip`);
+    console.log('  verified  matches skill/ file by file, archive included');
+    console.log(`  upload    ${display}/${SKILL_NAME}.zip to the marketplace; SKILL.md sits at its root.`);
     return 0;
   }
 
@@ -282,6 +384,7 @@ function main(argv) {
   }
 
   console.error('usage: node scripts/package-skill.mjs build [--out <zip>]');
+  console.error('       node scripts/package-skill.mjs package [--out <dir>] [--force]');
   console.error('       node scripts/package-skill.mjs check [<packaged dir|zip>]');
   return 2;
 }

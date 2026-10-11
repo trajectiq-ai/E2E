@@ -686,7 +686,8 @@ npm run e2e     # build + e2e/run.mjs: live MCP ↔ Playwright integration suite
 npm run mcpb    # build + bundle dist/ into playwright-e2e-mcp-<version>.mcpb (+ .sha256)
 npm run mcpb:smoke   # ...then install that bundle in a temp dir, launch it and assert the handshake
 npm run mcpb:sign    # ...then sign it with MCPB_CERT/MCPB_KEY → <version>.signed.mcpb
-npm run skill:zip    # → dist-skill/playwright-e2e-mcp.zip, the Agent Skill package to upload
+npm run skill:zip    # just the archive: dist-skill/playwright-e2e-mcp.zip
+npm run skill:package # the uploadable folder: ../agensi-skill-<version>/ (skill copy, README, zip)
 npm run skill:check  # build, then fail if a packaged copy has drifted from skill/
 ```
 
@@ -778,7 +779,8 @@ legitimately different.
 ### Packaging the agent skill
 
 ```bash
-npm run skill:zip                        # dist-skill/playwright-e2e-mcp.zip
+npm run skill:package                    # ../agensi-skill-<version>/, ready to upload
+npm run skill:zip                        # only the archive: dist-skill/playwright-e2e-mcp.zip
 npm run skill:check                      # build, then compare every copy
 npm run skill:check -- ../agensi-skill-0.2.2
 ```
@@ -790,10 +792,20 @@ the same Markdown as a zip with `playwright-e2e-mcp/` at its root.
 rather than assembled by hand, and it refuses what the marketplace rejects: a
 missing `SKILL.md`, a non-text file, a symlink, `Thumbs.db`.
 
+`skill:package` writes the whole folder a release would otherwise assemble by
+hand — the skill copy, `skill/README.md` and the archive — to
+`../agensi-skill-<version>` (or `--out <dir>`), then verifies it with the same
+comparison `check` uses, so a successful exit means the folder really is the
+skill tree. It is idempotent: a folder that already matches is left untouched.
+A folder that has drifted is refused instead of overwritten, because it may
+already be published — bump `version` for a new package, or pass `--force` to
+replace that one.
+
 The archive comes from the same deterministic writer as the `.mcpb`, so the
 same tree always hashes the same, and text payloads are LF-normalised first:
-a CRLF checkout builds the bytes an LF one does. CI runs `skill:check` and
-uploads the built zip as an artifact (`.github/workflows/ci.yml`).
+a CRLF checkout builds the bytes an LF one does. CI runs `skill:check`, generates
+a package folder, and uploads the built zip as an artifact
+(`.github/workflows/ci.yml`).
 
 `skill:check` is the other half of that, and the part that matters when a
 package has already been uploaded. It builds twice (the bytes must agree),

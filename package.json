@@ -53,6 +53,7 @@
     "mcpb:smoke": "npm run mcpb && node scripts/mcpb-launch-sim.mjs && node scripts/mcpb-client-check.mjs",
     "mcpb:sign": "npm run mcpb && node scripts/sign-mcpb.mjs",
     "skill:zip": "node scripts/package-skill.mjs build",
+    "skill:package": "node scripts/package-skill.mjs package",
     "skill:check": "node scripts/package-skill.mjs check",
     "release:verify": "node scripts/verify-release.mjs",
     "prepublishOnly": "npm test"

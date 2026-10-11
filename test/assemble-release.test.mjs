@@ -141,7 +141,7 @@ test('the notes may quote a hash the release actually publishes', () => {
       `# ${tag} — a test release\n\nThe bundle hashes ${hash}, which is what ships.\n`,
     );
     const result = assemble(f);
-    assert.match(result.body, new RegExp(hash));
+    assert.ok(result.body.includes(hash), 'the prose is carried through with its hash intact');
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
   }
@@ -178,12 +178,15 @@ test('assembly stages the artifacts, covers them all in SHA256SUMS.txt, and writ
     }
     // Everything staged is covered — that is what verify-release checks on a download.
     const staged = readFileSync(path.join(f.assetsDir, `${bundleName}.sha256`), 'utf8');
-    assert.match(staged, new RegExp(`^${sha256File(f.bundle)}  ${bundleName.replace(/\./g, '\\.')}$`, 'm'));
+    assert.ok(
+      staged.split('\n').includes(`${sha256File(f.bundle)}  ${bundleName}`),
+      'the sidecar names the bundle and its hash',
+    );
 
     const body = readFileSync(f.bodyPath, 'utf8');
     assert.ok(body.startsWith(ASSEMBLED_MARKER), 'a re-run identifies its own draft by the marker');
     assert.equal(result.body, body);
-    assert.match(body, new RegExp(`> Assembled from \`${tag}\``));
+    assert.ok(body.includes(`> Assembled from \`${tag}\``));
     assert.match(body, /^What is in it\.$/m);
     for (const asset of result.assets) {
       assert.ok(body.includes(`| \`${asset.name}\` | \`${asset.sha256}\` | ${asset.description} |`), asset.name);
